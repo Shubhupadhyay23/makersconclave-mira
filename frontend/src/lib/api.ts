@@ -1,4 +1,8 @@
+import type { OnboardingData, RecommendationResponse } from "./types";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE =
+  process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:8000";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -84,4 +88,38 @@ export function startScrape(userId: string) {
     method: "POST",
     body: JSON.stringify({ user_id: userId }),
   });
+}
+
+export async function fetchRecommendations(
+  sessionId: string
+): Promise<RecommendationResponse> {
+  const res = await fetch(
+    `${API_BASE}/api/sessions/${sessionId}/recommendations`,
+    { method: "POST" }
+  );
+  return res.json();
+}
+
+export async function submitReaction(
+  outfitId: string,
+  reaction: "liked" | "disliked" | "skipped"
+): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/api/outfits/${outfitId}/reaction`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reaction }),
+  });
+  return res.json();
+}
+
+export async function submitOnboarding(
+  userId: string,
+  data: OnboardingData
+): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/api/users/${userId}/onboarding`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
 }

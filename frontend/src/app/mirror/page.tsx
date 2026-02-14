@@ -1,147 +1,280 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { useCamera } from "@/hooks/useCamera";
-import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
-import { GestureIndicator } from "@/components/mirror/GestureIndicator";
+import { useEffect, useState, useRef } from "react";
 import { socket } from "@/lib/socket";
-import type { DetectedGesture, GestureType } from "@/types/gestures";
+import type { RecommendationResponse, Outfit } from "@/lib/types";
+
+type MirrorState = "idle" | "loading" | "showing_outfits" | "error";
 
 export default function MirrorPage() {
-  const searchParams = useSearchParams();
-  const userId = searchParams.get("user_id");
-  const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
-  const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
-  const gestureKeyRef = useRef(0);
-  const [gestureKey, setGestureKey] = useState(0);
+  const [state, setState] = useState<MirrorState>("idle");
+  const [data, setData] = useState<RecommendationResponse["data"] | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Connect socket and join user room
+  const outfits = data?.outfits ?? [];
+
+  // Auto-advance carousel
+  useEffect(() => {
+    if (state !== "showing_outfits" || outfits.length <= 1) return;
+    timerRef.current = setInterval(() => {
+      setActiveIndex((i) => (i + 1) % outfits.length);
+    }, 8000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [state, outfits.length]);
+
+  // Socket.io listeners
   useEffect(() => {
     socket.connect();
 
-    if (userId) {
-      socket.emit("join_room", { user_id: userId });
-    }
+    socket.on("outfit_generation_started", () => {
+      setState("loading");
+    });
+
+    socket.on("outfits_ready", (result: RecommendationResponse) => {
+      if (result.status === "success" && result.data) {
+        setData(result.data);
+        setActiveIndex(0);
+        setState("showing_outfits");
+      } else if (result.status === "error") {
+        setErrorMsg(result.message ?? "Something went wrong.");
+        setState("error");
+      }
+    });
+
+    socket.on("error", (err: { message: string }) => {
+      setErrorMsg(err.message);
+      setState("error");
+    });
 
     return () => {
+      socket.off("outfit_generation_started");
+      socket.off("outfits_ready");
+      socket.off("error");
       socket.disconnect();
     };
-  }, [userId]);
-
-  // Listen for snapshot requests from the backend
-  useEffect(() => {
-    const handleSnapshotRequest = () => {
-      const video = videoRef.current;
-      if (!video || video.readyState < video.HAVE_CURRENT_DATA) return;
-
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
-      ctx.drawImage(video, 0, 0);
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
-      // Strip the data URL prefix to get raw base64
-      const base64 = dataUrl.split(",")[1];
-
-      socket.emit("mirror_event", {
-        type: "snapshot",
-        image_base64: base64,
-        user_id: userId,
-      });
-    };
-
-    socket.on("request_snapshot", handleSnapshotRequest);
-    return () => {
-      socket.off("request_snapshot", handleSnapshotRequest);
-    };
-  }, [videoRef, userId]);
-
-  const handleGesture = useCallback((gesture: DetectedGesture) => {
-    console.log("[Mirror] Gesture detected:", gesture.type, gesture.confidence);
-
-    setLastGesture(gesture.type);
-    gestureKeyRef.current += 1;
-    setGestureKey(gestureKeyRef.current);
-
-    socket.emit("gesture_detected", {
-      type: gesture.type,
-      confidence: gesture.confidence,
-      timestamp: gesture.timestamp,
-    });
   }, []);
-
-  const { isLoading: isModelLoading, error: modelError } =
-    useGestureRecognizer({
-      videoRef,
-      isVideoReady: isCameraReady,
-      onGesture: handleGesture,
-    });
 
   return (
     <main
       style={{
-        position: "relative",
         width: "100vw",
         height: "100vh",
         background: "#000",
+        color: "#fff",
+        fontFamily: "'Helvetica Neue', Arial, sans-serif",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
         overflow: "hidden",
       }}
     >
-      {/* Webcam feed (mirrored) */}
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          transform: "scaleX(-1)",
-        }}
-      />
-
-      {/* Gesture visual feedback */}
-      <GestureIndicator key={gestureKey} gesture={lastGesture} />
-
-      {/* Status indicators */}
-      {(cameraError || modelError) && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 20,
-            left: 20,
-            color: "#f44",
-            fontSize: "1rem",
-            zIndex: 30,
-          }}
-        >
-          {cameraError && <div>Camera: {cameraError}</div>}
-          {modelError && <div>Model: {modelError}</div>}
-        </div>
+      {state === "idle" && <IdleView />}
+      {state === "loading" && <LoadingView />}
+      {state === "showing_outfits" && data && (
+        <OutfitsView
+          greeting={data.greeting}
+          styleAnalysis={data.style_analysis}
+          outfits={outfits}
+          activeIndex={activeIndex}
+          onDotClick={setActiveIndex}
+        />
       )}
-
-      {isModelLoading && (
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            color: "#fff",
-            fontSize: "1.5rem",
-            zIndex: 30,
-          }}
-        >
-          Loading gesture recognition...
-        </div>
-      )}
+      {state === "error" && <ErrorView message={errorMsg} />}
     </main>
+  );
+}
+
+function IdleView() {
+  return (
+    <div style={{ textAlign: "center", opacity: 0.5 }}>
+      <p style={{ fontSize: 24, letterSpacing: 4 }}>MIRRORLESS</p>
+      <p style={{ fontSize: 14, marginTop: 8 }}>Waiting for session...</p>
+    </div>
+  );
+}
+
+function LoadingView() {
+  return (
+    <div style={{ textAlign: "center" }}>
+      <p
+        style={{
+          fontSize: 28,
+          animation: "pulse 2s ease-in-out infinite",
+        }}
+      >
+        Mira is picking your outfits...
+      </p>
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
+    </div>
+  );
+}
+
+function OutfitsView({
+  greeting,
+  styleAnalysis,
+  outfits,
+  activeIndex,
+  onDotClick,
+}: {
+  greeting: string;
+  styleAnalysis: string;
+  outfits: Outfit[];
+  activeIndex: number;
+  onDotClick: (i: number) => void;
+}) {
+  const outfit = outfits[activeIndex];
+  if (!outfit) return null;
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        padding: 40,
+        boxSizing: "border-box",
+      }}
+    >
+      {/* Header */}
+      <div style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 22, fontWeight: 300, margin: 0 }}>{greeting}</p>
+        <p style={{ fontSize: 14, opacity: 0.6, marginTop: 6 }}>
+          {styleAnalysis}
+        </p>
+      </div>
+
+      {/* Outfit card */}
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 20,
+        }}
+      >
+        <p
+          style={{
+            fontSize: 20,
+            fontWeight: 600,
+            letterSpacing: 1,
+            margin: 0,
+          }}
+        >
+          {outfit.outfit_name}
+        </p>
+
+        {/* Items row */}
+        <div
+          style={{
+            display: "flex",
+            gap: 24,
+            justifyContent: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          {outfit.items.map((oi, idx) => (
+            <div
+              key={idx}
+              style={{
+                textAlign: "center",
+                width: 180,
+              }}
+            >
+              <div
+                style={{
+                  width: 180,
+                  height: 220,
+                  background: "#1a1a1a",
+                  borderRadius: 8,
+                  overflow: "hidden",
+                  marginBottom: 8,
+                }}
+              >
+                <img
+                  src={oi.item.image_url}
+                  alt={oi.item.title}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                />
+              </div>
+              <p
+                style={{
+                  fontSize: 13,
+                  margin: 0,
+                  opacity: 0.9,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {oi.item.title}
+              </p>
+              <p style={{ fontSize: 13, margin: "4px 0 0", opacity: 0.6 }}>
+                {oi.item.price}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* Mira comment */}
+        <p
+          style={{
+            fontSize: 15,
+            fontStyle: "italic",
+            opacity: 0.7,
+            maxWidth: 600,
+            textAlign: "center",
+            margin: 0,
+          }}
+        >
+          &ldquo;{outfit.mira_comment}&rdquo;
+        </p>
+      </div>
+
+      {/* Navigation dots */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          gap: 10,
+          paddingTop: 20,
+        }}
+      >
+        {outfits.map((_, i) => (
+          <button
+            key={i}
+            onClick={() => onDotClick(i)}
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              border: "none",
+              background: i === activeIndex ? "#fff" : "rgba(255,255,255,0.3)",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ErrorView({ message }: { message: string }) {
+  return (
+    <div style={{ textAlign: "center", maxWidth: 500, padding: 40 }}>
+      <p style={{ fontSize: 20, lineHeight: 1.6 }}>{message}</p>
+    </div>
   );
 }
