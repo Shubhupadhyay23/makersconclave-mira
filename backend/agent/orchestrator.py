@@ -60,7 +60,11 @@ class MiraOrchestrator:
     """Event-driven orchestrator for the Mira AI stylist agent."""
 
     def __init__(self, socket_io=None):
-        self.client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        self.client = anthropic.AsyncAnthropic(
+            auth_token=os.getenv("ANTHROPIC_AUTH_TOKEN"),
+            default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            default_query={"beta": "true"},
+        )
         self.sio = socket_io
         self.sessions: dict[str, SessionState] = {}
         self._silence_tasks: dict[str, asyncio.Task] = {}

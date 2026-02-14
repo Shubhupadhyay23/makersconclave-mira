@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Known receipt sender patterns (lowercase substrings)
 RECEIPT_SENDERS = [
+    # Major retailers
     "amazon.com",
     "noreply@zara.com",
     "nordstrom.com",
@@ -41,10 +42,21 @@ RECEIPT_SENDERS = [
     "target.com",
     "walmart.com",
     "chewy.com",
+    # Generic transactional sender prefixes
     "store-news@",
     "order-update@",
+    "orders@",
+    "order@",
     "receipt@",
+    "receipts@",
     "confirmation@",
+    "noreply@",
+    "no-reply@",
+    "store@",
+    "shipping@",
+    "ship-confirm@",
+    "notify@",
+    "notifications@",
 ]
 
 # Known brand names for matching
@@ -83,13 +95,16 @@ MERCHANT_PATTERN = re.compile(r"@([\w.-]+\.\w+)")
 
 
 def _is_receipt(email: dict) -> bool:
-    """Check if email is likely a receipt based on sender AND subject."""
+    """Check if email is likely a receipt based on sender OR subject keywords.
+
+    Either signal is sufficient — emails with neither are rejected.
+    """
     sender = email.get("sender", "").lower()
     subject = email.get("subject", "").lower()
     receipt_keywords = ["order", "receipt", "confirmation", "shipped", "purchase"]
     sender_match = any(pattern in sender for pattern in RECEIPT_SENDERS)
     subject_match = any(kw in subject for kw in receipt_keywords)
-    return sender_match and subject_match
+    return sender_match or subject_match
 
 
 def _detect_brand(text: str, sender: str) -> str:
@@ -204,8 +219,8 @@ def _extract_with_llm(email: dict) -> list[dict]:
     Only called when regex extraction returns 0 items. Uses Haiku for
     fast/cheap extraction (~$0.03 per full scrape session).
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
+    auth_token = os.getenv("ANTHROPIC_AUTH_TOKEN")
+    if not auth_token:
         return []
 
     subject = email.get("subject", "")
@@ -222,7 +237,11 @@ def _extract_with_llm(email: dict) -> list[dict]:
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(
+            auth_token=auth_token,
+            default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            default_query={"beta": "true"},
+        )
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,

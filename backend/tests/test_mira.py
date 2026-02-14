@@ -101,14 +101,18 @@ async def test_claude_with_mira():
     """Test a real Claude API call with Mira's personality and tools."""
     print("\n=== TEST 3: Live Claude Call as Mira ===\n")
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("SKIPPED - No ANTHROPIC_API_KEY set")
+    auth_token = os.getenv("ANTHROPIC_AUTH_TOKEN")
+    if not auth_token:
+        print("SKIPPED - No ANTHROPIC_AUTH_TOKEN set")
         return
 
     import anthropic
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = anthropic.AsyncAnthropic(
+        auth_token=auth_token,
+        default_headers={"anthropic-beta": "oauth-2025-04-20"},
+        default_query={"beta": "true"},
+    )
 
     system_prompt = build_system_prompt(
         user_profile=MOCK_PROFILE,
@@ -190,7 +194,7 @@ async def main():
     # Test 2: Needs SERPER_API_KEY
     await test_search_clothing_tool()
 
-    # Test 3: Needs ANTHROPIC_API_KEY
+    # Test 3: Needs ANTHROPIC_AUTH_TOKEN
     await test_claude_with_mira()
 
     print("\n" + "=" * 60)

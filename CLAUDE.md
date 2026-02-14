@@ -82,7 +82,8 @@ Backend uses `NeonHTTPClient` (in `models/database.py`) — a thin wrapper aroun
 
 ### Backend `.env`
 - `DATABASE_URL` — Neon Postgres connection string
-- `ANTHROPIC_API_KEY` — Claude API key
+- `ANTHROPIC_API_KEY` — Claude API key (for future non-Haiku models)
+- `ANTHROPIC_AUTH_TOKEN` — OAuth token for Haiku calls (via `claude setup-token`)
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth
 - `SERPER_API_KEY` — Serper.dev shopping API key
 - `DEEPGRAM_API_KEY` — Deepgram STT key

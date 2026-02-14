@@ -145,9 +145,9 @@ def _extract_with_llm(name: str, role: str, web_results: list[dict], image_resul
     Returns a dict with: title, organization, bio, photo_url, linkedin_url,
     twitter_url, website_url, confidence, source_urls.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return {"confidence": "none", "error": "No ANTHROPIC_API_KEY set"}
+    auth_token = os.getenv("ANTHROPIC_AUTH_TOKEN")
+    if not auth_token:
+        return {"confidence": "none", "error": "No ANTHROPIC_AUTH_TOKEN set"}
 
     # Format web results for the prompt
     web_text = ""
@@ -187,7 +187,11 @@ def _extract_with_llm(name: str, role: str, web_results: list[dict], image_resul
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(
+            auth_token=auth_token,
+            default_headers={"anthropic-beta": "oauth-2025-04-20"},
+            default_query={"beta": "true"},
+        )
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=512,
