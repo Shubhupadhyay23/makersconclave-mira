@@ -17,7 +17,7 @@ import anthropic
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
-from agent.prompts import build_system_prompt
+from agent.prompts import build_system_prompt, build_recommendation_prompt, get_mira_system_prompt
 from agent.tools import TOOL_DEFINITIONS, execute_tool
 from agent.memory import (
     load_user_profile,
@@ -584,9 +584,7 @@ async def generate_outfit_recommendations(
                 top_brands = user_data["style_profile"].get("brands", [])[:5]
 
         if not top_brands:
-            return create_error_response(
-                "no_brands", user_data["user"]["name"]
-            )
+            top_brands = ["Nike", "Zara", "H&M", "Uniqlo", "Levi's"]
 
         # Build and execute queries
         brand_queries = build_brand_queries(top_brands[:5], gender)
@@ -598,26 +596,21 @@ async def generate_outfit_recommendations(
 
         # Fetch clothing in parallel
         available_clothing = await fetch_clothing_batch(
-            all_queries, serper_api_key, num_results_per_query=10
+            all_queries, serper_api_key, num_results_per_query=5
         )
 
         if not available_clothing:
             return create_error_response("no_results", user_data["user"]["name"])
 
         # Step 6: Build Claude prompt
-        system_prompt = build_system_prompt(
-            user_profile=user_data.get("profile", {}),
-            purchases=user_data.get("purchases", []),
-        )
-        user_prompt = json.dumps({
-            "available_clothing": available_clothing,
-            "user_preferences": user_data.get("style_profile", {}),
-        })
+        system_prompt = get_mira_system_prompt()
+        # Limit items to avoid exceeding Claude's context window
+        user_prompt = build_recommendation_prompt(user_data, available_clothing[:50])
 
         # Step 7: Call Claude 4.5 Sonnet
         response = await anthropic_client.messages.create(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=4096,
+            max_tokens=16384,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )

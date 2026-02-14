@@ -2,6 +2,7 @@
 
 from collections import Counter
 from datetime import datetime, timedelta
+from typing import Dict, List
 
 
 MIRA_PERSONALITY = """\
@@ -379,3 +380,156 @@ def build_system_prompt(
             parts.append("NOTE: You're approaching the session limit. Start wrapping up naturally — give a confidence boost and recap favorites.")
 
     return "\n".join(parts)
+
+
+# --- Recommendation Pipeline Prompts ---
+
+MIRA_SYSTEM_PROMPT = """You are Mira, an AI fashion stylist for the Mirrorless smart mirror.
+
+**Personality**: You're friendly, teasing, and fashion-savvy. You know your user's shopping history intimately and reference specific purchases to show you're paying attention. You're encouraging but honest about what works.
+
+**Your Task**: Generate 5-7 personalized outfit recommendations based on the user's recent shopping history and available clothing items.
+
+**Guidelines**:
+1. **Match their existing style** - Don't push them outside their comfort zone. Look at what they've bought recently and suggest similar items.
+2. **Each outfit = TOP + BOTTOM minimum** - Can add accessories/shoes if relevant
+3. **Be specific** - Reference exact purchases with dates when explaining why items work together
+4. **Consider season** - Today is {current_date}
+5. **Budget awareness** - Most recommendations should be in their usual price range, but you can suggest 1-2 splurge items if they make sense
+6. **Make it personal** - Use patterns you notice ("You've bought 3 navy tops in the last month...", "This would go great with those gray pants you got in December")
+
+**Output Format** (JSON):
+```json
+{{{{
+  "greeting": "Hey [name]! I see you've been on a [pattern] kick lately...",
+  "style_analysis": "Brief analysis of their shopping patterns (1-2 sentences)",
+  "outfits": [
+    {{{{
+      "outfit_name": "Casual Friday Vibes",
+      "description": "Why this combination works and what vibe it gives",
+      "items": [
+        {{{{
+          "type": "top",
+          "item": {{{{
+            "title": "Item name exactly as shown in available_clothing",
+            "source": "Brand/Seller name",
+            "price": "$XX.XX",
+            "price_numeric": 29.99,
+            "image_url": "https://...",
+            "link": "https://...",
+            "product_id": "abc123",
+            "rating": 4.5
+          }}}}
+        }}}},
+        {{{{
+          "type": "bottom",
+          "item": {{{{
+            "title": "Item name exactly as shown in available_clothing",
+            "source": "Brand/Seller name",
+            "price": "$XX.XX",
+            "price_numeric": 29.99,
+            "image_url": "https://...",
+            "link": "https://...",
+            "product_id": "abc123",
+            "rating": 4.5
+          }}}}
+        }}}}
+      ],
+      "mira_comment": "A teasing or encouraging personal comment about this outfit"
+    }}}}
+  ]
+}}}}
+```
+
+**CRITICAL rules**:
+- Copy item fields EXACTLY as they appear in available_clothing. Do NOT rename fields (e.g. do NOT use "name" instead of "title", do NOT use "brand" instead of "source", do NOT use "image" instead of "image_url").
+- EVERY outfit MUST have at least 2 items (top + bottom). Single-item outfits are NOT acceptable.
+- Each outfit should have 2-4 items (minimum top + bottom)
+- Your comments should feel like they're from someone who knows the user's closet
+- If you can't find good matches, explain why in-character
+"""
+
+
+def build_recommendation_prompt(user_data: Dict, available_clothing: List[Dict]) -> str:
+    """
+    Build user message with context (purchases + available items).
+
+    Args:
+        user_data: Dict with user, style_profile, recent_purchases, top_brands
+        available_clothing: List of clothing items from Serper
+
+    Returns:
+        Formatted prompt string with all context
+    """
+    user = user_data["user"]
+    style_profile = user_data.get("style_profile")
+    recent_purchases = user_data.get("recent_purchases", [])
+    top_brands = user_data.get("top_brands", [])
+
+    # Format recent purchases
+    purchases_text = ""
+    if recent_purchases:
+        purchases_text = "**Recent Purchases (last 6 months)**:\n"
+        for p in recent_purchases[:15]:  # Limit to 15 most recent
+            raw_date = p.get("date")
+            if raw_date is None:
+                date_str = "Unknown date"
+            elif isinstance(raw_date, str):
+                date_str = datetime.strptime(raw_date, "%Y-%m-%d").strftime("%B %Y")
+            else:
+                date_str = raw_date.strftime("%B %Y")
+            price_str = f"${float(p['price']):.2f}" if p.get("price") else "Unknown price"
+            purchases_text += f"- {p['item_name']} by {p['brand']} ({date_str}, {price_str})\n"
+    else:
+        purchases_text = "**No recent purchases found** - this is a new user\n"
+
+    # Format style profile
+    style_text = ""
+    if style_profile:
+        style_text = f"""
+**Style Profile**:
+- Favorite brands: {', '.join(style_profile.get('brands', []))}
+- Price range: ${style_profile.get('price_range', {{}}).get('min', 0)} - ${style_profile.get('price_range', {{}}).get('max', 500)}
+- Style tags: {', '.join(style_profile.get('style_tags', []))}
+"""
+    else:
+        style_text = "**No style profile available**\n"
+
+    # Format available clothing
+    clothing_text = f"\n**Available Clothing Items ({len(available_clothing)} items)**:\n"
+    clothing_text += "These are items available for purchase from their favorite brands:\n\n"
+
+    for item in available_clothing:
+        clothing_text += f"""
+- **{item['title']}**
+  - Brand/Seller: {item['source']}
+  - Price: {item['price']}
+  - Rating: {item.get('rating', 'N/A')}
+  - Link: {item['link']}
+  - Image: {item['image_url']}
+  - Product ID: {item['product_id']}
+"""
+
+    prompt = f"""
+**User**: {user['name']} ({user['email']})
+
+{style_text}
+
+{purchases_text}
+
+**Top 5 Favorite Brands**: {', '.join(top_brands) if top_brands else 'None yet'}
+
+{clothing_text}
+
+---
+
+Now generate 5-7 outfit recommendations for {user['name']}. Be specific and reference their purchase history!
+"""
+
+    return prompt
+
+
+def get_mira_system_prompt() -> str:
+    """Get the Mira system prompt with current date."""
+    current_date = datetime.now().strftime("%B %d, %Y")
+    return MIRA_SYSTEM_PROMPT.format(current_date=current_date)

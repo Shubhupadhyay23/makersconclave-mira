@@ -1,5 +1,6 @@
 """User data service for fetching profile, purchases, and preferences."""
 
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List
 from uuid import UUID
@@ -41,11 +42,15 @@ async def get_user_profile_and_purchases(db: NeonHTTPClient, user_id: str) -> Di
     """
     recent_purchases = await db.execute(purchases_query, [user_id, six_months_ago])
 
-    # Get top 5 brands by purchase count
+    # Get top 5 clothing brands by purchase count (filter out non-clothing purchases)
     brands_query = """
         SELECT brand, COUNT(*) as count
         FROM purchases
         WHERE user_id = $1 AND date >= $2
+          AND (
+            item_name ~* '(shirt|pants|jacket|dress|shoe|sneaker|hoodie|sweater|jeans|tee|polo|shorts|coat|vest|blouse|skirt|boot|sandal|hat|cap|belt|sock|legging|jogger|blazer|suit|scarf|glove|beanie|top|bottom|wear|cloth|apparel|denim|chino|cardigan|pullover|parka|tracksuit|air.?max|air.?force|air.?jordan|dunk|yeezy|new.?balance|converse|vans|chuck)'
+            OR category IN ('shoes', 'top', 'bottom', 'outerwear', 'accessories', 'clothing')
+          )
         GROUP BY brand
         ORDER BY count DESC
         LIMIT 5
@@ -80,13 +85,27 @@ async def save_outfits_to_database(
 
         # Insert clothing items and collect UUIDs
         for item_data in outfit.get("items", []):
-            item = item_data.get("item", {})
+            # Handle both nested {"item": {...}} and flat item structure
+            item = item_data.get("item") if isinstance(item_data.get("item"), dict) else item_data
+
+            name = item.get("title") or item.get("name")
+            if not name:
+                continue  # Skip items without a name
+
+            link = item.get("link") or item.get("buy_url")
+            price = item.get("price_numeric") or item.get("price")
+            # Parse string prices like "$49.99"
+            if isinstance(price, str):
+                price = float(price.replace("$", "").replace(",", "").strip() or "0")
 
             # Check if item already exists by link
-            check_query = """
-                SELECT id FROM clothing_items WHERE buy_url = $1
-            """
-            existing = await db.execute(check_query, [item.get("link")])
+            if link:
+                check_query = """
+                    SELECT id FROM clothing_items WHERE buy_url = $1
+                """
+                existing = await db.execute(check_query, [link])
+            else:
+                existing = []
 
             if existing:
                 item_uuids.append(str(existing[0]["id"]))
@@ -100,12 +119,12 @@ async def save_outfits_to_database(
                 result = await db.execute(
                     insert_item_query,
                     [
-                        item.get("title"),
-                        item.get("source"),
-                        item.get("price_numeric"),
+                        name,
+                        item.get("source") or item.get("brand"),
+                        price,
                         item.get("image_url"),
-                        item.get("link"),
-                        item_data.get("type"),
+                        link,
+                        item_data.get("type") or item.get("category"),
                         "serper",
                     ],
                 )
@@ -114,12 +133,12 @@ async def save_outfits_to_database(
         # Insert outfit record
         insert_outfit_query = """
             INSERT INTO session_outfits (session_id, outfit_data, clothing_items)
-            VALUES ($1, $2, $3)
+            VALUES ($1, $2::jsonb, $3::uuid[])
             RETURNING id
         """
         result = await db.execute(
             insert_outfit_query,
-            [session_id, outfit, item_uuids],
+            [session_id, json.dumps(outfit), item_uuids],
         )
         outfit_name = outfit.get("outfit_name", "")
         if result:
@@ -138,7 +157,7 @@ async def is_new_user(db: NeonHTTPClient, user_id: str) -> bool:
     profile_query = "SELECT COUNT(*) as count FROM style_profiles WHERE user_id = $1"
     profile_count = await db.fetchval(profile_query, [user_id])
 
-    return purchase_count == 0 and profile_count == 0
+    return int(purchase_count) == 0 and int(profile_count) == 0
 
 
 async def save_onboarding_data(
