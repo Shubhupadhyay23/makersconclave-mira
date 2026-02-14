@@ -45,7 +45,6 @@ RECEIPT_SENDERS = [
     "order-update@",
     "receipt@",
     "confirmation@",
-    "noreply@",
 ]
 
 # Known brand names for matching
@@ -84,13 +83,13 @@ MERCHANT_PATTERN = re.compile(r"@([\w.-]+\.\w+)")
 
 
 def _is_receipt(email: dict) -> bool:
-    """Check if email is likely a receipt based on sender."""
+    """Check if email is likely a receipt based on sender AND subject."""
     sender = email.get("sender", "").lower()
     subject = email.get("subject", "").lower()
     receipt_keywords = ["order", "receipt", "confirmation", "shipped", "purchase"]
     sender_match = any(pattern in sender for pattern in RECEIPT_SENDERS)
     subject_match = any(kw in subject for kw in receipt_keywords)
-    return sender_match or subject_match
+    return sender_match and subject_match
 
 
 def _detect_brand(text: str, sender: str) -> str:
@@ -174,6 +173,17 @@ def _parse_price(price_str: str) -> float | None:
 def _categorize_item(item_name: str) -> str | None:
     """Rough category assignment based on item name keywords."""
     name = item_name.lower()
+
+    # Exclude false positives from financial/marketing language
+    exclusions = [
+        "short selling", "short position", "top picks", "top rated",
+        "top stories", "top news", "top 10", "top five", "top deal",
+        "boot camp", "bootcamp", "bootstrap",
+        "jacket cover", "dust jacket",
+    ]
+    if any(exc in name for exc in exclusions):
+        return None
+
     categories = {
         "shoes": ["shoe", "sneaker", "boot", "sandal", "air max", "jordan", "runner"],
         "tops": ["shirt", "tee", "top", "blouse", "sweater", "hoodie", "jacket", "blazer", "coat"],
@@ -269,7 +279,7 @@ def extract_purchases(email: dict) -> list[dict]:
                 "source_email_id": email.get("message_id"),
             })
     else:
-        # Fallback: extract from subject line
+        # Fallback: extract from subject line — require price + fashion signal
         prices = PRICE_PATTERN.findall(full_text)
         price = _parse_price(prices[0]) if prices else None
         item_name = re.sub(
@@ -278,7 +288,16 @@ def extract_purchases(email: dict) -> list[dict]:
             subject,
             flags=re.IGNORECASE,
         ).strip().rstrip(".")
-        if item_name:
+        # Only store subject-line items that have a price and look like fashion
+        _fashion_signals = (
+            "shirt", "tee", "top", "blouse", "sweater", "hoodie", "jacket",
+            "blazer", "coat", "pant", "jean", "short", "skirt", "trouser",
+            "dress", "shoe", "sneaker", "boot", "sandal", "hat", "cap",
+            "belt", "bag", "scarf", "watch", "sunglasses", "legging",
+            "romper", "jumpsuit", "vest", "parka", "jordan", "air max",
+        )
+        has_fashion_signal = any(sig in item_name.lower() for sig in _fashion_signals)
+        if item_name and price is not None and has_fashion_signal:
             purchases.append({
                 "brand": brand,
                 "merchant": merchant,
