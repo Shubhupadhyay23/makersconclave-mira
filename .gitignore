@@ -45,5 +45,8 @@ htmlcov/
 *.log
 npm-debug.log*
 
+# Worktrees
+.worktrees/
+
 # Misc
 *.pem
