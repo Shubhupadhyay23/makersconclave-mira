@@ -67,6 +67,9 @@ async def upsert_user(db: NeonHTTPClient, token_data: dict) -> dict:
         "access_token": token_data["access_token"],
         "refresh_token": token_data.get("refresh_token"),
         "id_token": token_data.get("id_token_jwt"),
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "token_uri": "https://oauth2.googleapis.com/token",
     })
 
     rows = await db.execute(

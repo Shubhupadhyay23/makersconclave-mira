@@ -4,10 +4,11 @@ import { useState } from "react";
 import { UserProfile } from "@/lib/api";
 import GoogleSignIn from "@/components/phone/GoogleSignIn";
 import ProfileForm from "@/components/phone/ProfileForm";
+import ScrapeResults from "@/components/phone/ScrapeResults";
 import PokeLink from "@/components/phone/PokeLink";
 import QueueStatus from "@/components/phone/QueueStatus";
 
-type Step = "signin" | "profile" | "poke" | "queue";
+type Step = "signin" | "profile" | "scrape" | "poke" | "queue";
 
 export default function PhonePage() {
   const [step, setStep] = useState<Step>("signin");
@@ -19,7 +20,7 @@ export default function PhonePage() {
     setError("");
     // If they already have a phone number, skip profile step
     if (profile.phone) {
-      setStep("poke");
+      setStep("scrape");
     } else {
       setStep("profile");
     }
@@ -28,7 +29,7 @@ export default function PhonePage() {
   function handleProfileComplete(updated: UserProfile) {
     setUser(updated);
     setError("");
-    setStep("poke");
+    setStep("scrape");
   }
 
   function handlePokeSkip() {
@@ -73,6 +74,10 @@ export default function PhonePage() {
           onComplete={handleProfileComplete}
           onError={setError}
         />
+      )}
+
+      {step === "scrape" && user && (
+        <ScrapeResults userId={user.id} onContinue={() => setStep("poke")} />
       )}
 
       {step === "poke" && <PokeLink onContinue={handlePokeSkip} />}

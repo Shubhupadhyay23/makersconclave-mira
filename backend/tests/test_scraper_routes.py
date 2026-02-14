@@ -35,18 +35,13 @@ async def test_exchange_token_endpoint(mock_db):
 
 
 @pytest.mark.asyncio
-async def test_start_scrape_endpoint(mock_db):
-    """POST /api/scrape/start triggers fast scrape and returns results."""
-    mock_result = ScrapeResult(
-        purchases=[{"brand": "Nike", "item_name": "Shoes", "price": 100}],
-        brand_freq={"Nike": 3},
-        profile={"brands": ["Nike"], "price_range": {"min": 100, "max": 100, "avg": 100}, "style_tags": ["athletic"], "narrative_summary": "Sporty style"},
-    )
+async def test_start_scrape_returns_started(mock_db):
+    """POST /api/scrape/start returns immediately with {status: 'started'}."""
     mock_db.execute.return_value = [{"google_oauth_token": {"access_token": "abc"}}]
 
     with (
         patch("scraper.routes.get_neon_client", return_value=mock_db),
-        patch("scraper.routes.fast_scrape", return_value=mock_result),
+        patch("scraper.routes.asyncio.create_task") as mock_task,
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -56,5 +51,20 @@ async def test_start_scrape_endpoint(mock_db):
             )
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["purchases"]) == 1
-    assert data["profile"]["brands"] == ["Nike"]
+    assert data["status"] == "started"
+    mock_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_start_scrape_no_token(mock_db):
+    """POST /api/scrape/start returns 400 if user has no OAuth token."""
+    mock_db.execute.return_value = [{"google_oauth_token": None}]
+
+    with patch("scraper.routes.get_neon_client", return_value=mock_db):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/scrape/start",
+                json={"user_id": "user-123"},
+            )
+    assert resp.status_code == 400

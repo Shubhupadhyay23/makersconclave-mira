@@ -55,3 +55,33 @@ export function getQueueStatus(userId: string) {
 export function getUser(userId: string) {
   return request<UserProfile>(`/users/${userId}`);
 }
+
+export interface Purchase {
+  brand: string;
+  merchant: string | null;
+  item_name: string;
+  category: string | null;
+  price: number | null;
+  date: string | null;
+  order_status: string | null;
+}
+
+export interface StyleProfile {
+  brands: string[];
+  price_range: { min: number; max: number; avg: number };
+  style_tags: string[];
+  narrative_summary: string | null;
+}
+
+export interface ScrapeResult {
+  purchases: Purchase[];
+  brand_freq: Record<string, number>;
+  profile: StyleProfile;
+}
+
+export function startScrape(userId: string) {
+  return request<{ status: string }>("/api/scrape/start", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}

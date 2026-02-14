@@ -1,6 +1,26 @@
 """Socket.io events for scraping progress updates."""
 
 
+async def emit_purchase_found(
+    sio,
+    user_id: str,
+    email_subject: str,
+    purchases: list[dict],
+    total_so_far: int,
+) -> None:
+    """Emit a per-email purchase event as each email is parsed."""
+    await sio.emit(
+        "purchase_found",
+        {
+            "user_id": user_id,
+            "email_subject": email_subject,
+            "purchases": purchases,
+            "total_so_far": total_so_far,
+        },
+        room=user_id,
+    )
+
+
 async def emit_scrape_progress(
     sio,
     user_id: str,

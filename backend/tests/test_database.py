@@ -109,7 +109,7 @@ async def test_users_columns(db):
         "SELECT column_name FROM information_schema.columns WHERE table_name = 'users' ORDER BY ordinal_position"
     )
     columns = [r["column_name"] for r in rows]
-    expected = ["id", "name", "email", "phone", "google_oauth_token", "poke_id", "created_at"]
+    expected = ["id", "name", "email", "phone", "google_oauth_token", "poke_id", "created_at", "last_scraped_at"]
     assert columns == expected
 
 

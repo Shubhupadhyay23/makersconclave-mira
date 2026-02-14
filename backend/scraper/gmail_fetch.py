@@ -46,18 +46,40 @@ def get_message_content(service, message_id: str) -> dict:
     }
 
 
-def _extract_body(payload: dict) -> str:
-    """Recursively extract plain text body from Gmail message payload."""
-    mime = payload.get("mimeType", "")
+def _find_mime_part(payload: dict, mime_type: str) -> str | None:
+    """Recursively search MIME parts for the first part matching mime_type.
 
-    if mime == "text/plain" and "body" in payload:
+    Returns decoded text content or None if not found.
+    """
+    if payload.get("mimeType") == mime_type and "body" in payload:
         data = payload["body"].get("data", "")
         if data:
             return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
 
     for part in payload.get("parts", []):
-        text = _extract_body(part)
-        if text:
-            return text
+        result = _find_mime_part(part, mime_type)
+        if result:
+            return result
+
+    return None
+
+
+def _extract_body(payload: dict) -> str:
+    """Extract text body from Gmail message payload.
+
+    Strategy: prefer text/plain, fall back to text/html converted via BeautifulSoup.
+    """
+    plain = _find_mime_part(payload, "text/plain")
+    if plain:
+        return plain
+
+    html = _find_mime_part(payload, "text/html")
+    if html:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        return soup.get_text(separator="\n", strip=True)
 
     return ""
