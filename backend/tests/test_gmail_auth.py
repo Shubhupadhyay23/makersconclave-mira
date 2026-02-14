@@ -15,7 +15,8 @@ def test_exchange_auth_code_returns_credentials():
     mock_flow.credentials.client_secret = "client_secret"
     mock_flow.credentials.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
 
-    with patch("scraper.gmail_auth.InstalledAppFlow") as MockFlow:
+    with patch("scraper.gmail_auth.InstalledAppFlow") as MockFlow, \
+         patch.dict("os.environ", {"GOOGLE_CLIENT_ID": "test_id", "GOOGLE_CLIENT_SECRET": "test_secret"}):
         MockFlow.from_client_config.return_value = mock_flow
         result = exchange_auth_code("fake_auth_code", redirect_uri="http://localhost:3000")
 
