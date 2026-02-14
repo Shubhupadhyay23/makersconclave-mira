@@ -171,8 +171,12 @@ class MiraOrchestrator:
 
         session.is_processing = True
         try:
-            session.last_input_time = time.time()
-            self._start_silence_timer(user_id)
+            # Only restart the silence timer on real user input — not on
+            # silence events themselves, which would create a feedback loop
+            # (silence → Mira speaks → new timer → silence → repeat).
+            if event.get("type") != "silence":
+                session.last_input_time = time.time()
+                self._start_silence_timer(user_id)
 
             # Track gesture outcomes
             gesture = event.get("gesture")
