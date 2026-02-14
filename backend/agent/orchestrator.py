@@ -49,6 +49,9 @@ class SessionState:
     is_active: bool = True
     last_input_time: float = field(default_factory=time.time)
     wrapping_up: bool = False
+    user_context: dict = field(default_factory=dict)
+    system_prompt: str = ""
+    _last_shown_item: dict | None = None
 
 
 class MiraOrchestrator:
@@ -66,14 +69,23 @@ class MiraOrchestrator:
         self.sessions[user_id] = session
 
         # Load user data from DB
-        db = NeonHTTPClient()
+        profile = {}
+        purchases = []
+        past_sessions = []
+        oauth_token = None
+
         try:
-            profile = await load_user_profile(db, user_id)
-            purchases = await load_user_purchases(db, user_id)
-            past_sessions = await load_past_sessions(db, user_id)
-            oauth_token = await get_user_oauth_token(db, user_id)
-        finally:
-            await db.close()
+            db = NeonHTTPClient()
+            try:
+                profile = await load_user_profile(db, user_id)
+                purchases = await load_user_purchases(db, user_id)
+                past_sessions = await load_past_sessions(db, user_id)
+                oauth_token = await get_user_oauth_token(db, user_id)
+            finally:
+                await db.close()
+        except Exception as e:
+            print(f"[mira] Warning: Could not load user data from DB: {e}")
+            # Continue with empty data — Mira will still work, just less personalized
 
         # Store on session for tool access
         session.user_context = {
@@ -96,16 +108,19 @@ class MiraOrchestrator:
             },
         )
 
-        # Create the DB session record
-        db = NeonHTTPClient()
+        # Create the DB session record (best-effort)
         try:
-            await db.execute(
-                "INSERT INTO sessions (id, user_id, started_at, status) "
-                "VALUES ($1, $2, now(), 'active')",
-                [session.session_id, user_id],
-            )
-        finally:
-            await db.close()
+            db = NeonHTTPClient()
+            try:
+                await db.execute(
+                    "INSERT INTO sessions (id, user_id, started_at, status) "
+                    "VALUES ($1, $2::uuid, now(), 'active')",
+                    [session.session_id, user_id],
+                )
+            finally:
+                await db.close()
+        except Exception as e:
+            print(f"[mira] Warning: Could not create session record: {e}")
 
         # Start silence detection
         self._start_silence_timer(user_id)
@@ -132,14 +147,13 @@ class MiraOrchestrator:
         self._start_silence_timer(user_id)
 
         # Track gesture outcomes
-        event_type = event.get("type")
         gesture = event.get("gesture")
 
-        if gesture == "thumbs_up" or gesture == "swipe_right":
+        if gesture in ("thumbs_up", "swipe_right"):
             session.likes += 1
-            if hasattr(session, "_last_shown_item") and session._last_shown_item:
+            if session._last_shown_item:
                 session.liked_items.append(session._last_shown_item)
-        elif gesture == "thumbs_down" or gesture == "swipe_left":
+        elif gesture in ("thumbs_down", "swipe_left"):
             session.dislikes += 1
 
         # Build user message from event
@@ -151,9 +165,9 @@ class MiraOrchestrator:
 
         # Update system prompt with current session state
         session.system_prompt = build_system_prompt(
-            user_profile=session.user_context["profile"],
-            purchases=session.user_context["purchases"],
-            session_history=session.user_context["past_sessions"],
+            user_profile=session.user_context.get("profile", {}),
+            purchases=session.user_context.get("purchases", []),
+            session_history=session.user_context.get("past_sessions", []),
             session_state={
                 "items_shown": session.items_shown,
                 "likes": session.likes,
@@ -163,7 +177,12 @@ class MiraOrchestrator:
         )
 
         # Call Claude
-        await self._call_claude(session)
+        try:
+            await self._call_claude(session)
+        except Exception as e:
+            print(f"[mira] Error calling Claude: {e}")
+            # Send error message in-character
+            await self._stream_text(user_id, "Hmm, my brain glitched for a second. What were we talking about?")
 
     async def _call_claude(self, session: SessionState) -> None:
         """Make a streaming Claude API call with tool use."""
