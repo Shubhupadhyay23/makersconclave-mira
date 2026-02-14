@@ -68,8 +68,10 @@ export default function PhonePage() {
     if (reaction === "liked") setLiked((n) => n + 1);
 
     // Fire-and-forget reaction update
-    const outfitId = outfits[currentIdx]?.outfit_name; // placeholder ID
-    submitReaction(outfitId, reaction).catch(() => {});
+    const outfitId = outfits[currentIdx]?.id;
+    if (outfitId) {
+      submitReaction(outfitId, reaction).catch(() => {});
+    }
 
     if (currentIdx + 1 < outfits.length) {
       setCurrentIdx((i) => i + 1);

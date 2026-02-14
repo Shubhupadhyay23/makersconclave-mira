@@ -1,0 +1,167 @@
+"""User data service for fetching profile, purchases, and preferences."""
+
+from datetime import datetime, timedelta
+from typing import Dict, List
+from uuid import UUID
+
+from models.database import NeonHTTPClient
+
+
+async def get_user_profile_and_purchases(db: NeonHTTPClient, user_id: str) -> Dict:
+    """
+    Fetch user profile, style preferences, and recent purchases (3-6 months).
+
+    Returns: {
+        "user": {...},
+        "style_profile": {...},
+        "recent_purchases": [...],
+        "top_brands": [...]
+    }
+    """
+    six_months_ago = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+
+    # Fetch user info
+    user_query = "SELECT * FROM users WHERE id = $1"
+    user_rows = await db.execute(user_query, [user_id])
+    if not user_rows:
+        return None
+
+    user = user_rows[0]
+
+    # Fetch style profile
+    style_query = "SELECT * FROM style_profiles WHERE user_id = $1"
+    style_rows = await db.execute(style_query, [user_id])
+    style_profile = style_rows[0] if style_rows else None
+
+    # Fetch recent purchases (last 6 months)
+    purchases_query = """
+        SELECT * FROM purchases
+        WHERE user_id = $1 AND date >= $2
+        ORDER BY date DESC
+    """
+    recent_purchases = await db.execute(purchases_query, [user_id, six_months_ago])
+
+    # Get top 5 brands by purchase count
+    brands_query = """
+        SELECT brand, COUNT(*) as count
+        FROM purchases
+        WHERE user_id = $1 AND date >= $2
+        GROUP BY brand
+        ORDER BY count DESC
+        LIMIT 5
+    """
+    brand_rows = await db.execute(brands_query, [user_id, six_months_ago])
+    top_brands = [row["brand"] for row in brand_rows]
+
+    return {
+        "user": user,
+        "style_profile": style_profile,
+        "recent_purchases": recent_purchases,
+        "top_brands": top_brands,
+    }
+
+
+async def save_outfits_to_database(
+    db: NeonHTTPClient, session_id: str, outfits: List[Dict]
+) -> Dict[str, str]:
+    """
+    Save outfit recommendations to database and return ID mappings.
+
+    For each outfit:
+    1. Insert clothing items into clothing_items table (if not exists)
+    2. Collect item UUIDs
+    3. Insert into session_outfits with outfit_data JSON and item UUIDs
+
+    Returns: dict mapping outfit_name → outfit UUID
+    """
+    outfit_ids: Dict[str, str] = {}
+    for outfit in outfits:
+        item_uuids = []
+
+        # Insert clothing items and collect UUIDs
+        for item_data in outfit.get("items", []):
+            item = item_data.get("item", {})
+
+            # Check if item already exists by link
+            check_query = """
+                SELECT id FROM clothing_items WHERE buy_url = $1
+            """
+            existing = await db.execute(check_query, [item.get("link")])
+
+            if existing:
+                item_uuids.append(str(existing[0]["id"]))
+            else:
+                # Insert new clothing item
+                insert_item_query = """
+                    INSERT INTO clothing_items (name, brand, price, image_url, buy_url, category, source)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    RETURNING id
+                """
+                result = await db.execute(
+                    insert_item_query,
+                    [
+                        item.get("title"),
+                        item.get("source"),
+                        item.get("price_numeric"),
+                        item.get("image_url"),
+                        item.get("link"),
+                        item_data.get("type"),
+                        "serper",
+                    ],
+                )
+                item_uuids.append(str(result[0]["id"]))
+
+        # Insert outfit record
+        insert_outfit_query = """
+            INSERT INTO session_outfits (session_id, outfit_data, clothing_items)
+            VALUES ($1, $2, $3)
+            RETURNING id
+        """
+        result = await db.execute(
+            insert_outfit_query,
+            [session_id, outfit, item_uuids],
+        )
+        outfit_name = outfit.get("outfit_name", "")
+        if result:
+            outfit_ids[outfit_name] = str(result[0]["id"])
+
+    return outfit_ids
+
+
+async def is_new_user(db: NeonHTTPClient, user_id: str) -> bool:
+    """Check if user needs onboarding (no purchases and no style profile)."""
+    # Check for purchases
+    purchases_query = "SELECT COUNT(*) as count FROM purchases WHERE user_id = $1"
+    purchase_count = await db.fetchval(purchases_query, [user_id])
+
+    # Check for style profile
+    profile_query = "SELECT COUNT(*) as count FROM style_profiles WHERE user_id = $1"
+    profile_count = await db.fetchval(profile_query, [user_id])
+
+    return purchase_count == 0 and profile_count == 0
+
+
+async def save_onboarding_data(
+    db: NeonHTTPClient, user_id: str, questionnaire: dict
+):
+    """Save onboarding questionnaire to style_profiles table."""
+    query = """
+        INSERT INTO style_profiles (user_id, brands, price_range, style_tags, size_info)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            brands = EXCLUDED.brands,
+            price_range = EXCLUDED.price_range,
+            style_tags = EXCLUDED.style_tags,
+            size_info = EXCLUDED.size_info
+    """
+    await db.execute(
+        query,
+        [
+            user_id,
+            questionnaire.get("favorite_brands", []),
+            questionnaire.get("price_range", {}),
+            questionnaire.get("style_preferences", []),
+            questionnaire.get("size_info", {}),
+        ],
+    )

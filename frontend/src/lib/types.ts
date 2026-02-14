@@ -15,6 +15,7 @@ export interface OutfitItem {
 }
 
 export interface Outfit {
+  id?: string;
   outfit_name: string;
   description: string;
   items: OutfitItem[];

@@ -10,9 +10,11 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Dict
 from uuid import uuid4
 
 import anthropic
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
 from agent.prompts import build_system_prompt
@@ -27,6 +29,11 @@ from agent.memory import (
     refresh_calendar_events,
 )
 from models.database import NeonHTTPClient
+from services.user_data_service import (
+    get_user_profile_and_purchases,
+    is_new_user,
+    save_outfits_to_database,
+)
 
 load_dotenv()
 
@@ -35,6 +42,9 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SILENCE_TIMEOUT_SECONDS = 5
 EVENT_BATCH_WINDOW_MS = 200
 SOFT_API_LIMIT = 20
+
+# Initialize Anthropic client for recommendation pipeline
+anthropic_client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 @dataclass
@@ -521,3 +531,208 @@ class MiraOrchestrator:
         task = self._silence_tasks.pop(user_id, None)
         if task and not task.done():
             task.cancel()
+
+
+# --- Recommendation Pipeline (standalone functions) ---
+
+
+async def generate_outfit_recommendations(
+    user_id: str, session_id: str, db: NeonHTTPClient
+) -> Dict:
+    """
+    Orchestrate the full recommendation flow.
+
+    1. Fetch user data (profile + 3-6mo purchases + top 5 brands)
+    2. Handle new users (check if needs onboarding)
+    3. Build brand-specific Serper queries (top 5 brands)
+    4. Check cache, or fetch from Serper in parallel
+    5. Cache results for session
+    6. Build Claude prompt (system + user context)
+    7. Call Claude 4.5 Sonnet
+    8. Parse JSON response
+    9. Async save to database (background task)
+    10. Return results immediately
+    """
+    from services.serper_search import build_brand_queries, fetch_clothing_batch
+
+    start_time = time.time()
+
+    try:
+        # Step 1: Fetch user data
+        user_data = await get_user_profile_and_purchases(db, user_id)
+        if not user_data:
+            return create_error_response("user_not_found", "Unknown User")
+
+        # Step 2: Check if new user needs onboarding
+        if await is_new_user(db, user_id):
+            return {
+                "status": "needs_onboarding",
+                "message": "User needs to complete onboarding questionnaire",
+            }
+
+        # Step 3 & 4: Get clothing items (fetch from Serper)
+        # Determine gender from style profile
+        gender = "mens"
+        if user_data.get("style_profile"):
+            gender = user_data["style_profile"].get("gender", "mens")
+
+        # Build queries for top 5 brands
+        top_brands = user_data.get("top_brands", [])
+        if not top_brands:
+            # Fallback to style profile brands
+            if user_data.get("style_profile"):
+                top_brands = user_data["style_profile"].get("brands", [])[:5]
+
+        if not top_brands:
+            return create_error_response(
+                "no_brands", user_data["user"]["name"]
+            )
+
+        # Build and execute queries
+        brand_queries = build_brand_queries(top_brands[:5], gender)
+        all_queries = brand_queries["tops"] + brand_queries["bottoms"]
+
+        serper_api_key = os.getenv("SERPER_API_KEY")
+        if not serper_api_key:
+            return create_error_response("api_error", user_data["user"]["name"])
+
+        # Fetch clothing in parallel
+        available_clothing = await fetch_clothing_batch(
+            all_queries, serper_api_key, num_results_per_query=10
+        )
+
+        if not available_clothing:
+            return create_error_response("no_results", user_data["user"]["name"])
+
+        # Step 6: Build Claude prompt
+        system_prompt = build_system_prompt(
+            user_profile=user_data.get("profile", {}),
+            purchases=user_data.get("purchases", []),
+        )
+        user_prompt = json.dumps({
+            "available_clothing": available_clothing,
+            "user_preferences": user_data.get("style_profile", {}),
+        })
+
+        # Step 7: Call Claude 4.5 Sonnet
+        response = await anthropic_client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        # Step 8: Parse JSON response
+        response_text = response.content[0].text
+
+        # Extract JSON from response (handle markdown code blocks)
+        try:
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                json_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                json_text = response_text[json_start:json_end].strip()
+            else:
+                json_text = response_text.strip()
+
+            recommendations = json.loads(json_text)
+        except json.JSONDecodeError:
+            # Fallback: try to extract JSON object directly
+            try:
+                start = response_text.find("{")
+                end = response_text.rfind("}") + 1
+                recommendations = json.loads(response_text[start:end])
+            except (json.JSONDecodeError, ValueError):
+                return create_error_response("api_error", user_data["user"]["name"])
+
+        # Step 9: Save to database and collect outfit IDs
+        outfits = recommendations.get("outfits", [])
+        outfit_ids = await save_outfits_to_database(db, session_id, outfits)
+
+        # Attach database IDs to each outfit in the response
+        for outfit in outfits:
+            name = outfit.get("outfit_name", "")
+            if name in outfit_ids:
+                outfit["id"] = outfit_ids[name]
+
+        # Step 10: Return results
+        generation_time_ms = int((time.time() - start_time) * 1000)
+
+        return {
+            "status": "success",
+            "data": recommendations,
+            "generation_time_ms": generation_time_ms,
+        }
+
+    except Exception as e:
+        print(f"Error generating recommendations: {e}")
+        return create_error_response("api_error", "there")
+
+
+def create_error_response(error_type: str, user_name: str) -> Dict:
+    """
+    Generate in-character error messages from Mira.
+
+    Types: "no_results", "new_user", "api_error", "no_brands", "user_not_found"
+    """
+    error_messages = {
+        "no_results": {
+            "status": "error",
+            "error_type": "no_results",
+            "message": f"Hey {user_name}! I tried searching for new pieces from your favorite brands, but I'm not finding much right now. This could be a temporary glitch with the shopping search. Want to try again in a minute?",
+        },
+        "new_user": {
+            "status": "needs_onboarding",
+            "message": f"Hi {user_name}! I'd love to help you pick out some outfits, but I don't know your style yet. Let's do a quick questionnaire so I can get to know your taste!",
+        },
+        "api_error": {
+            "status": "error",
+            "error_type": "api_error",
+            "message": f"Oof, {user_name} — something went wrong on my end. Technical difficulties! Give me a sec and let's try again.",
+        },
+        "no_brands": {
+            "status": "error",
+            "error_type": "no_brands",
+            "message": f"Hey {user_name}! I don't have any brands to search yet. Have you done any shopping recently, or want to tell me your favorite brands in the onboarding?",
+        },
+        "user_not_found": {
+            "status": "error",
+            "error_type": "user_not_found",
+            "message": "I can't find your profile. Are you logged in?",
+        },
+    }
+
+    return error_messages.get(error_type, error_messages["api_error"])
+
+
+async def update_outfit_reaction(
+    db: NeonHTTPClient, outfit_id: str, reaction: str
+) -> Dict:
+    """
+    Update user reaction for an outfit.
+
+    Args:
+        db: Database client
+        outfit_id: UUID of the outfit
+        reaction: "liked", "disliked", or "skipped"
+    """
+    try:
+        query = """
+            UPDATE session_outfits
+            SET reaction = $1
+            WHERE id = $2
+            RETURNING id
+        """
+        result = await db.execute(query, [reaction, outfit_id])
+
+        if not result:
+            return {"status": "error", "message": "Outfit not found"}
+
+        return {"status": "success"}
+
+    except Exception as e:
+        print(f"Error updating outfit reaction: {e}")
+        return {"status": "error", "message": "Failed to update reaction"}
