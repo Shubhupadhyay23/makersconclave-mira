@@ -4,91 +4,97 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth), their purchase history is scraped from Gmail, and AI stylist "Mira" gives personalized outfit recommendations overlaid on their body in real-time via a two-way mirror display.
-
-## Architecture
-
-- **Frontend (Next.js)**: Mirror display (full-screen Chrome on TV), phone UI (onboarding + dashboard), deployed on Vercel
-- **Backend (Python FastAPI)**: Agent orchestrator, Gmail scraping, SerpAPI integration, MCP server, deployed on Render
-- **Database**: Neon Postgres
-- **Real-time**: Socket.io connecting mirror display, phone, and backend
-
-## Key Technical Decisions
-
-- **AI Agent**: Custom event-driven orchestrator calling Claude API directly (NOT Claude Agents SDK). Events (voice, gestures, pose) are batched and sent to Claude.
-- **Claude Model**: Haiku 4.5 via Anthropic API with OAuth setup token + beta headers
-- **Voice**: Deepgram streaming STT (input) → HeyGen LiveAvatar API (output)
-- **Body tracking**: MediaPipe BlazePose (pose) + MediaPipe Hands (gestures) in browser
-- **Clothing overlay**: 2D affine transforms based on pose landmarks. Fallback: side-by-side display
-- **Clothing data**: SerpAPI / Google Shopping API
-- **Scraping strategy**: Fast parallel pass (~15s) for immediate agent context, background deep scrape async
+Mirrorless is an AI-powered smart mirror (hackathon project). Users onboard via phone (Google OAuth), their purchase history is scraped from Gmail, and AI stylist "Mira" gives personalized outfit recommendations overlaid on their body in real-time via a two-way mirror display. Full spec in `SPEC.md`.
 
 ## Build & Run Commands
 
-### Frontend (Next.js)
-```
+### Frontend (Next.js 15 + React 19 + TypeScript)
+```bash
 cd frontend
 npm install
-npm run dev        # Development server
-npm run build      # Production build
-npm run lint       # ESLint
+npm run dev          # Dev server on :3000
+npm run build        # Production build (also type-checks)
+npm run lint         # ESLint
+npm run test         # Vitest (single run)
+npm run test:watch   # Vitest (watch mode)
 ```
 
-### Backend (Python FastAPI)
-```
+### Backend (Python 3.11+ / FastAPI)
+```bash
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --reload    # Development server
-pytest                       # Run tests
-pytest tests/test_scraper.py # Single test file
+uvicorn main:app --reload        # Dev server on :8000
+pytest                           # All tests
+pytest tests/test_auth.py -v     # Single test file
+pytest tests/test_auth.py::test_upsert_creates_new_user  # Single test
 ```
 
 ### Deploy
-```
-vercel --prod                           # Frontend to Vercel
-# Backend deploys via Render dashboard or render.yaml
+```bash
+vercel --prod          # Frontend to Vercel
+# Backend deploys via Render dashboard
 ```
 
-## Project Structure
+## Architecture
 
+- **Frontend (Next.js on Vercel)**: Two apps in one — mirror display (full-screen Chrome on TV) and phone UI (onboarding + dashboard)
+- **Backend (FastAPI on Render)**: Agent orchestrator, Gmail scraping, Serper shopping API, MCP server
+- **Database**: Neon Postgres (7 tables, cascade deletes on user). Schema in `backend/migrations/001_initial_schema.sql`
+- **Real-time**: Socket.io connecting mirror display, phone, and backend
+
+### Data flow
 ```
-frontend/           # Next.js app (mirror display + phone UI)
-  src/
-    app/
-      mirror/       # Full-screen mirror display page
-      phone/        # Phone onboarding + dashboard
-      api/          # Next.js API routes (Socket.io, etc.)
-    components/
-      mirror/       # Mirror-specific components (overlay, Mira avatar)
-      phone/        # Phone UI components
-    lib/            # Shared utilities, Socket.io client
-backend/            # Python FastAPI
-  main.py           # FastAPI app entry
-  agent/            # Mira orchestrator, Claude API integration
-  scraper/          # Gmail scraping, data extraction
-  mcp/              # MCP server for Poke integration
-  models/           # Pydantic models, DB schemas
-  services/         # SerpAPI, Deepgram, HeyGen integrations
+Phone → POST /auth/google → Backend exchanges code with Google → upserts user in Neon
+Phone → POST /queue/join → Backend assigns position → Phone polls GET /queue/status every 5s
+Mirror → MediaPipe (pose+gestures) → Socket.io → Backend → Claude API → Socket.io → Mirror overlay
 ```
+
+### Database access pattern
+Backend uses `NeonHTTPClient` (in `models/database.py`) — a thin wrapper around Neon's serverless HTTP API on port 443. Each endpoint creates a client, uses it, closes it. Production alternative: asyncpg pool (port 5432 + SSL). All queries use `$1, $2` parameterized placeholders.
+
+## Key Technical Decisions
+
+- **AI Agent**: Custom event-driven orchestrator in `backend/agent/orchestrator.py` calling Claude API directly (NOT Claude Agents SDK). Events (voice, gestures, pose) are batched and sent to Claude Haiku 4.5.
+- **Google OAuth**: Authorization code flow via `google.accounts.oauth2.initCodeClient` with `"postmessage"` redirect URI. Scopes include `gmail.readonly` and `calendar.readonly` for scraping.
+- **No JWT/sessions**: `user_id` (UUID) is the session identifier, stored in React state.
+- **Gesture detection**: MediaPipe Hands in browser → `gesture-classifier.ts` (swipe detection via 5-point wrist tracking window, 800ms cooldown, 0.6 confidence threshold)
+- **Clothing data**: Serper.dev Shopping API (`POST https://google.serper.dev/shopping`)
+- **Voice pipeline**: Deepgram streaming STT (input) → HeyGen LiveAvatar API (output)
+- **Frontend styling**: Inline styles (no CSS framework)
+
+## API Endpoints (Backend)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/auth/google` | Exchange Google OAuth code → upsert user |
+| POST | `/auth/profile` | Update user name + phone |
+| POST | `/queue/join` | Idempotent queue join, returns position |
+| GET | `/queue/status/{user_id}` | Poll queue position + total_ahead |
+| GET | `/users/{user_id}` | Fetch user profile |
+| GET | `/health` | Health check |
 
 ## Environment Variables
 
-### Frontend (.env.local)
+### Frontend `.env.local`
+- `NEXT_PUBLIC_API_URL` — Backend REST URL (e.g. `http://localhost:8000`)
 - `NEXT_PUBLIC_SOCKET_URL` — Backend WebSocket URL
 - `NEXT_PUBLIC_GOOGLE_CLIENT_ID` — Google OAuth client ID
 
-### Backend (.env)
+### Backend `.env`
 - `DATABASE_URL` — Neon Postgres connection string
 - `ANTHROPIC_API_KEY` — Claude API key
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth
-- `SERPAPI_KEY` — SerpAPI key
+- `SERPER_API_KEY` — Serper.dev shopping API key
 - `DEEPGRAM_API_KEY` — Deepgram STT key
 - `HEYGEN_API_KEY` — HeyGen avatar API key
 
 ## Conventions
 
-- Frontend uses TypeScript, backend uses Python 3.11+
-- Socket.io events use snake_case: `outfit_changed`, `gesture_detected`, `session_started`
-- All Claude API calls go through `backend/agent/orchestrator.py` — never call Claude directly from frontend
+- Frontend: TypeScript strict mode, path alias `@/*` → `./src/*`
+- Backend: Python 3.11+, Pydantic models in `models/schemas.py`
+- Socket.io events: snake_case (`gesture_detected`, `outfit_changed`, `session_started`)
+- All Claude API calls go through `backend/agent/orchestrator.py` — never from frontend
 - Mira's personality prompt lives in `backend/agent/prompts.py`
-- Database migrations via raw SQL files in `backend/migrations/`
+- Database migrations: raw SQL in `backend/migrations/`
+- Tests run against live Neon (no mocks) — test fixtures create and delete their own data
+- Frontend tests use Vitest + jsdom + @testing-library/react

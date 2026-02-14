@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 
+from routers import auth, queue, users
 from scraper.routes import router as scraper_router
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -16,6 +17,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
+app.include_router(queue.router)
+app.include_router(users.router)
 app.include_router(scraper_router)
 
 # Make sio accessible to routes
