@@ -35,7 +35,7 @@ interface ActiveUser {
   name: string;
 }
 
-const PHONE_URL = "https://poke.com/r/fU6M2CeFtp6";
+const PHONE_URL = "https://mirrorless.vercel.app/phone";
 const WAITING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 const HOLD_DURATION_MS = 2000;
 const CANVAS_WIDTH = 1920;
@@ -1052,14 +1052,32 @@ function MirrorPage() {
         />
       </div>
 
-      {/* End Session button (z-10, top-left corner, subdued ghost style) */}
+      {/* Mira Video Avatar (z-10, top-left, inset from edge) */}
+      {sessionActive && (
+        <div
+          style={{
+            position: "absolute",
+            top: 24,
+            left: "12%",
+            zIndex: 10,
+          }}
+        >
+          <MiraVideoAvatar
+            emotion={mira.emotion}
+            state={mira.avatarState}
+            size={180}
+          />
+        </div>
+      )}
+
+      {/* End Session button (z-10, top-right, symmetrical with avatar) */}
       {sessionActive && (
         <button
           onClick={handleEndSession}
           style={{
             position: "absolute",
             top: 24,
-            left: 24,
+            right: "12%",
             zIndex: 10,
             padding: "8px 16px",
             fontSize: "0.85rem",
@@ -1084,24 +1102,6 @@ function MirrorPage() {
         >
           End Session
         </button>
-      )}
-
-      {/* Mira Video Avatar (z-10, top-right corner) */}
-      {sessionActive && (
-        <div
-          style={{
-            position: "absolute",
-            top: 24,
-            right: 24,
-            zIndex: 10,
-          }}
-        >
-          <MiraVideoAvatar
-            emotion={mira.emotion}
-            state={mira.avatarState}
-            size={180}
-          />
-        </div>
       )}
 
       {/* Speech display (z-10, bottom-center, above price strip) */}
