@@ -300,6 +300,10 @@ class MiraOrchestrator:
 
                 # Get the final message for tool use blocks
                 final_message = await stream.get_final_message()
+
+            # Signal end-of-message so frontend flushes the sentence buffer
+            if collected_text:
+                await self._stream_text(session.user_id, "", end_of_message=True)
         except Exception as e:
             print(f"[mira] Claude API call failed for {session.user_id}: {e}")
             # Pop the last user message to keep conversation history consistent
@@ -503,12 +507,17 @@ class MiraOrchestrator:
 
         return str(event)
 
-    async def _stream_text(self, user_id: str, text_chunk: str) -> None:
-        """Stream a text chunk to the frontend and HeyGen."""
+    async def _stream_text(self, user_id: str, text_chunk: str, end_of_message: bool = False) -> None:
+        """Stream a text chunk to the frontend and HeyGen.
+
+        When end_of_message is True, emits is_chunk=false so the frontend's
+        SentenceBuffer flushes any remaining text (the last sentence has no
+        trailing delimiter to trigger a boundary).
+        """
         if self.sio:
             await self.sio.emit(
                 "mira_speech",
-                {"text": text_chunk, "is_chunk": True},
+                {"text": text_chunk, "is_chunk": not end_of_message},
                 room=user_id,
             )
 

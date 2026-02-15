@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import socketio
 
-from routers import auth, queue, users
+from routers import auth, queue, users, heygen
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
 from agent.orchestrator import MiraOrchestrator, generate_outfit_recommendations, update_outfit_reaction
@@ -34,6 +34,7 @@ app.include_router(queue.router)
 app.include_router(users.router)
 app.include_router(scraper_router)
 app.include_router(judges_router)
+app.include_router(heygen.router)
 
 # Make sio and Mira accessible to routes
 app.state.sio = sio
@@ -131,12 +132,17 @@ async def connect(sid, environ):
 
 @sio.event
 async def join_room(sid, data):
-    """Client joins a user-specific room for targeted events."""
+    """Client joins a user-specific room for targeted events.
+
+    Supports both mirror_id (mirror display) and user_id (phone/Poke).
+    """
     user_id = data.get("user_id")
-    if user_id:
-        await sio.enter_room(sid, user_id)
-        _sid_to_user[sid] = user_id
-        print(f"[socket] {sid} joined room {user_id}")
+    mirror_id = data.get("mirror_id")
+    room = mirror_id or user_id
+    if room:
+        await sio.enter_room(sid, room)
+        _sid_to_user[sid] = room
+        print(f"[socket] {sid} joined room {room}")
 
 
 @sio.event
@@ -168,10 +174,16 @@ async def start_session(sid, data):
 
     if not _is_valid_uuid(user_id):
         print(f"[mira] Invalid UUID from {sid}: {user_id}")
-        await sio.emit("session_error", {"error": f"Invalid user ID: must be a valid UUID"}, to=sid)
+        await sio.emit(
+            "session_error",
+            {"error": "Invalid user ID: must be a valid UUID"},
+            to=sid,
+        )
         return
 
     print(f"[mira] Starting session for user {user_id}")
+    # Notify frontend that session is active (starts avatar + STT)
+    await sio.emit("session_active", {"user_id": user_id}, room=user_id)
     try:
         await mira.start_session(user_id)
     except Exception as e:

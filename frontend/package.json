@@ -11,6 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@heygen/liveavatar-web-sdk": "^0.0.10",
     "@mediapipe/tasks-vision": "^0.10.18",
     "next": "^15.1.0",
     "react": "^19.0.0",
