@@ -1,15 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getQueueStatus, joinQueue, QueueInfo } from "@/lib/api";
+import { useEffect, useState, useRef } from "react";
+import { getQueueStatus, joinQueue, leaveQueue, QueueInfo } from "@/lib/api";
 
 interface QueueStatusProps {
   userId: string;
+  onBecameActive?: () => void;
+  onLeave?: () => void;
 }
 
-export default function QueueStatus({ userId }: QueueStatusProps) {
+export default function QueueStatus({ userId, onBecameActive, onLeave }: QueueStatusProps) {
   const [queue, setQueue] = useState<QueueInfo | null>(null);
   const [error, setError] = useState("");
+  const [leaving, setLeaving] = useState(false);
+  const firedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,9 +46,28 @@ export default function QueueStatus({ userId }: QueueStatusProps) {
     };
   }, [userId]);
 
+  // Fire onBecameActive exactly once
+  useEffect(() => {
+    if (queue?.status === "active" && !firedRef.current && onBecameActive) {
+      firedRef.current = true;
+      onBecameActive();
+    }
+  }, [queue?.status, onBecameActive]);
+
+  async function handleLeave() {
+    setLeaving(true);
+    try {
+      await leaveQueue(userId);
+      onLeave?.();
+    } catch {
+      setLeaving(false);
+      setError("Failed to leave queue. Please try again.");
+    }
+  }
+
   if (error) {
     return (
-      <div style={{ textAlign: "center", color: "#c00" }}>
+      <div className="text-center text-red-500">
         <p>{error}</p>
       </div>
     );
@@ -52,7 +75,7 @@ export default function QueueStatus({ userId }: QueueStatusProps) {
 
   if (!queue) {
     return (
-      <div style={{ textAlign: "center", color: "#666" }}>
+      <div className="text-center text-zinc-500">
         <p>Joining the queue...</p>
       </div>
     );
@@ -60,53 +83,44 @@ export default function QueueStatus({ userId }: QueueStatusProps) {
 
   if (queue.status === "active") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-        <div
-          style={{
-            width: 80,
-            height: 80,
-            borderRadius: "50%",
-            background: "#22c55e",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 36,
-          }}
-        >
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-20 h-20 rounded-full bg-green-500 flex items-center justify-center text-white text-4xl">
           ✓
         </div>
-        <h2 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>It&apos;s your turn!</h2>
-        <p style={{ color: "#666", margin: 0 }}>Head to the mirror to begin your session.</p>
+        <h2 className="text-2xl font-bold">It&apos;s your turn!</h2>
+        <p className="text-zinc-500">Head to the mirror to begin your session.</p>
+        <button
+          onClick={handleLeave}
+          disabled={leaving}
+          className="mt-4 text-sm text-zinc-400 hover:text-zinc-600 transition-colors disabled:opacity-50"
+        >
+          {leaving ? "Leaving..." : "Leave Queue"}
+        </button>
       </div>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
-      <h2 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>You&apos;re in the queue</h2>
-      <div
-        style={{
-          width: 100,
-          height: 100,
-          borderRadius: "50%",
-          background: "#f4f4f5",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 40,
-          fontWeight: 700,
-        }}
-      >
+    <div className="flex flex-col items-center gap-5">
+      <h2 className="text-xl font-bold">You&apos;re in the queue</h2>
+      <div className="w-24 h-24 rounded-full bg-zinc-100 flex items-center justify-center text-4xl font-bold">
         {queue.position}
       </div>
-      <p style={{ color: "#666", margin: 0, textAlign: "center" }}>
+      <p className="text-zinc-500 text-center">
         {queue.total_ahead === 0
           ? "You're next! Hang tight."
           : `${queue.total_ahead} ${queue.total_ahead === 1 ? "person" : "people"} ahead of you`}
       </p>
-      <p style={{ color: "#999", fontSize: 14, margin: 0 }}>
+      <p className="text-zinc-400 text-sm">
         This page updates automatically.
       </p>
+      <button
+        onClick={handleLeave}
+        disabled={leaving}
+        className="mt-2 text-sm text-zinc-400 hover:text-zinc-600 transition-colors disabled:opacity-50"
+      >
+        {leaving ? "Leaving..." : "Leave Queue"}
+      </button>
     </div>
   );
 }
