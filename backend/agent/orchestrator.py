@@ -375,6 +375,85 @@ class MiraOrchestrator:
             session.conversation_history = history[:valid_up_to]
             print(f"[mira] History validation: removed {removed} messages, kept {valid_up_to} for {session.user_id}")
 
+    def _compact_history(self, session: SessionState) -> None:
+        """Compact older history entries to stay under the 200k token context limit.
+
+        Base64 images (~50-100k tokens each) and large tool-result JSON are the
+        main culprits. Strategy: keep the last KEEP_RECENT messages intact and
+        replace images / truncate tool results in everything before that.
+        """
+        KEEP_RECENT = 8   # last ~4 turns untouched
+        MAX_TOOL_RESULT_CHARS = 600  # truncate older tool result strings
+
+        history = session.conversation_history
+        if len(history) <= KEEP_RECENT:
+            return
+
+        compact_boundary = len(history) - KEEP_RECENT
+        compacted_images = 0
+        compacted_tool_results = 0
+
+        for idx in range(compact_boundary):
+            msg = history[idx]
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            new_content = []
+            for block in content:
+                # --- dict blocks (user messages, tool_result) ---
+                if isinstance(block, dict):
+                    btype = block.get("type")
+
+                    # Replace base64 images with a lightweight placeholder
+                    if btype == "image":
+                        new_content.append({
+                            "type": "text",
+                            "text": "[image removed — earlier in conversation]",
+                        })
+                        compacted_images += 1
+                        continue
+
+                    # Truncate large tool_result content strings
+                    if btype == "tool_result":
+                        rc = block.get("content", "")
+                        if isinstance(rc, str) and len(rc) > MAX_TOOL_RESULT_CHARS:
+                            block = {**block, "content": rc[:MAX_TOOL_RESULT_CHARS] + " ...[truncated]"}
+                            compacted_tool_results += 1
+                        # tool_result content can also be a list (take_photo returns list with image)
+                        elif isinstance(rc, list):
+                            new_rc = []
+                            for sub in rc:
+                                if isinstance(sub, dict) and sub.get("type") == "image":
+                                    new_rc.append({"type": "text", "text": "[image removed — earlier in conversation]"})
+                                    compacted_images += 1
+                                else:
+                                    new_rc.append(sub)
+                            block = {**block, "content": new_rc}
+
+                    new_content.append(block)
+                    continue
+
+                # --- SDK ContentBlock objects (assistant messages) ---
+                if hasattr(block, "type") and block.type == "image":
+                    new_content.append({
+                        "type": "text",
+                        "text": "[image removed — earlier in conversation]",
+                    })
+                    compacted_images += 1
+                    continue
+
+                new_content.append(block)
+
+            history[idx]["content"] = new_content
+
+        if compacted_images or compacted_tool_results:
+            print(
+                f"[mira] History compacted for {session.user_id}: "
+                f"removed {compacted_images} images, truncated {compacted_tool_results} tool results "
+                f"(kept last {KEEP_RECENT} messages intact)"
+            )
+
     async def _call_claude(self, session: SessionState, tool_depth: int = 0) -> None:
         """Make a streaming Claude API call with tool use."""
         if session.wrapping_up:
@@ -393,6 +472,9 @@ class MiraOrchestrator:
 
         # Defense-in-depth: validate history before sending to Claude
         self._validate_history(session)
+
+        # Compact old images and tool results to stay under 200k token limit
+        self._compact_history(session)
 
         session.api_calls += 1
         model, max_tokens = self._select_model(session)
@@ -549,8 +631,8 @@ class MiraOrchestrator:
                     room=session.user_id,
                 )
 
-            # Track items shown (present_items + display_product count — search_clothing is invisible)
-            if tool_use.name in ("present_items", "display_product") and result.get("items"):
+            # Track items shown (display_product count — search_clothing is invisible)
+            if tool_use.name == "display_product" and result.get("items"):
                 session.items_shown += len(result["items"])
                 if result["items"]:
                     session._last_shown_item = result["items"][0]
