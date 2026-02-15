@@ -48,7 +48,7 @@ async def speak(body: SpeakRequest):
                         "style": 0.5,
                         "use_speaker_boost": True,
                     },
-                    "speed": 1.15,
+                    "speed": 1.2,
                 },
                 timeout=30.0,
             )
@@ -99,7 +99,7 @@ async def stream_speech(body: SpeakRequest):
                         "style": 0.5,
                         "use_speaker_boost": True,
                     },
-                    "speed": 1.15,
+                    "speed": 1.2,
                 },
                 timeout=30.0,
             ) as resp:
