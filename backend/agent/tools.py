@@ -739,21 +739,22 @@ def _format_clothing_for_claude(items: List[Dict]) -> str:
     tops = [i for i in items if i.get("clothing_category") == "top"]
     bottoms = [i for i in items if i.get("clothing_category") == "bottom"]
 
+    # Hard cap: 10 items per category (fixes cache-hit path that bypasses _select_diverse_items)
+    tops = tops[:10]
+    bottoms = bottoms[:10]
+
     def _format_section(section_items: List[Dict]) -> str:
         text = ""
         for item in section_items:
+            # Slim format: remove Link (massive Google Shopping URLs) and Rating
+            # Keep Image (Claude needs image_url for display_product) and ID
             text += (
-                f"- **{item['title']}**\n"
-                f"  - Brand/Seller: {item['source']}\n"
-                f"  - Price: {item['price']}\n"
-                f"  - Rating: {item.get('rating', 'N/A')}\n"
-                f"  - Link: {item['link']}\n"
-                f"  - Image: {item['image_url']}\n"
-                f"  - Product ID: {item['product_id']}\n"
+                f"- **{item['title']}** | {item['source']} | {item['price']}\n"
+                f"  Image: {item['image_url']} | ID: {item['product_id']}\n"
             )
         return text
 
-    result = f"Found {len(items)} clothing items:\n\n"
+    result = f"Found {len(tops) + len(bottoms)} clothing items:\n\n"
     result += "IMPORTANT: Pick tops ONLY from the TOPS section and bottoms ONLY from the BOTTOMS section.\n\n"
 
     if tops:

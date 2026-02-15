@@ -42,6 +42,7 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SILENCE_TIMEOUT_SECONDS = 5
 EVENT_BATCH_WINDOW_MS = 200
 SOFT_API_LIMIT = 20
+MAX_TOOL_RESULT_CHARS = 20_000  # ~5k tokens max per tool result in history
 
 # Initialize Anthropic client for recommendation pipeline
 anthropic_client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -235,14 +236,15 @@ class MiraOrchestrator:
                     session.last_input_time = time.time()
                     self._start_silence_timer(user_id)
 
-                # Track gesture outcomes
+                # Track gesture outcomes — only thumbs express preference;
+                # swipes are pure navigation and don't affect like/dislike counts
                 gesture = event.get("gesture")
 
-                if gesture in ("thumbs_up", "swipe_right"):
+                if gesture == "thumbs_up":
                     session.likes += 1
                     if session._last_shown_item:
                         session.liked_items.append(session._last_shown_item)
-                elif gesture in ("thumbs_down", "swipe_left"):
+                elif gesture == "thumbs_down":
                     session.dislikes += 1
 
                 # Build user message from event
@@ -609,6 +611,9 @@ class MiraOrchestrator:
                         if isinstance(rc, str):
                             # JSON string — strip any surviving data URLs
                             cleaned = self._strip_data_urls_in_string(rc)
+                            # Hard size cap: catch old oversized results from before insertion-time cap
+                            if len(cleaned) > MAX_TOOL_RESULT_CHARS:
+                                cleaned = cleaned[:MAX_TOOL_RESULT_CHARS] + ' ...[truncated]'
                             new_content.append({**block, "content": cleaned})
                         elif isinstance(rc, list):
                             # List content (e.g. take_photo) — strip images if old
@@ -869,6 +874,11 @@ class MiraOrchestrator:
             # Belt-and-suspenders: string-level scan catches anything the dict walker missed
             stripped_json = self._strip_data_urls_in_string(stripped_json)
 
+            # Hard size cap: prevent oversized tool results from blowing up context
+            if len(stripped_json) > MAX_TOOL_RESULT_CHARS:
+                stripped_json = stripped_json[:MAX_TOOL_RESULT_CHARS] + ' ...[truncated]'
+                print(f"[mira] Tool result for {tool_use.name} truncated: {len(stripped_json):,} chars")
+
             print(f"[mira] Tool result for {tool_use.name}: raw={len(raw_json):,} → stripped={len(stripped_json):,} chars")
 
             tool_result_block = {
@@ -1079,10 +1089,11 @@ class MiraOrchestrator:
         elif event_type == "gesture":
             gesture = event.get("gesture", "unknown")
             gesture_descriptions = {
-                "swipe_right": "The user swiped right (like/next).",
-                "swipe_left": "The user swiped left (dislike/skip).",
+                "swipe_left": "The user swiped to see the next outfit.",
+                "swipe_right": "The user swiped to go back to the previous outfit.",
                 "thumbs_up": "The user gave a thumbs up (like this item).",
                 "thumbs_down": "The user gave a thumbs down (dislike this item).",
+                "end_of_outfits": "The user has swiped through all available outfits. They've seen everything you've shown so far.",
             }
             return gesture_descriptions.get(gesture, f"The user made a {gesture} gesture.")
 
