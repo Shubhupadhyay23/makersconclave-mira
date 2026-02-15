@@ -41,13 +41,14 @@ async def speak(body: SpeakRequest):
                 },
                 json={
                     "text": body.text,
-                    "model_id": "eleven_multilingual_v2",
+                    "model_id": "eleven_turbo_v2_5",
                     "voice_settings": {
                         "stability": 0.5,
                         "similarity_boost": 0.8,
                         "style": 0.5,
                         "use_speaker_boost": True,
                     },
+                    "speed": 1.2,
                 },
                 timeout=30.0,
             )
@@ -91,13 +92,14 @@ async def stream_speech(body: SpeakRequest):
                 },
                 json={
                     "text": body.text,
-                    "model_id": "eleven_multilingual_v2",
+                    "model_id": "eleven_turbo_v2_5",
                     "voice_settings": {
                         "stability": 0.5,
                         "similarity_boost": 0.8,
                         "style": 0.5,
                         "use_speaker_boost": True,
                     },
+                    "speed": 1.2,
                 },
                 timeout=30.0,
             ) as resp:

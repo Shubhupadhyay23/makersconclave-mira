@@ -74,7 +74,7 @@ export default function ChatPage() {
     });
 
     socket.on("tool_result", (data: { type: string; query: string; items: ProductItem[] }) => {
-      if (data.type === "clothing_results" && data.items?.length > 0) {
+      if ((data.type === "clothing_results" || data.type === "display_product") && data.items?.length > 0) {
         setProducts((prev) => [
           ...prev,
           { id: `product-${Date.now()}`, query: data.query, items: data.items },

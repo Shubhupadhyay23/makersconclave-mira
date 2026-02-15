@@ -30,16 +30,25 @@ export interface ProcessedToolResult {
 /**
  * Process a tool_result Socket.io event into display-ready data.
  *
- * Handles two tool result types:
+ * Handles tool result types:
  * - `display_product`: tries flat lay overlay first, falls back to ProductCarousel cards
- * - `clothing_results`: always maps to ProductCarousel cards (from present_items)
+ * - `clothing_results`: (legacy) always maps to ProductCarousel cards
  *
  * Returns null for unknown types or empty items.
  */
 export function processToolResult(data: ToolResultData): ProcessedToolResult | null {
-  if (!data.items || data.items.length === 0) return null;
+  if (!data.items || data.items.length === 0) {
+    console.warn("[MirrorV2:ToolResult] No items in:", data.type);
+    return null;
+  }
 
   if (data.type === "display_product") {
+    console.log(`[MirrorV2:ToolResult] display_product received ${data.items.length} items, outfit: "${data.outfit_name}"`);
+    // Log raw item data for debugging the pipeline
+    for (const it of data.items) {
+      console.log(`[MirrorV2:ToolResult]   → "${it.title}" type=${it.type ?? "MISSING"} image_url=${it.image_url ? "yes" : "no"} cleaned=${it.cleaned_image_url ? "yes" : "no"} flat=${it.flat_image_url ? "yes" : "no"}`);
+    }
+
     const canvasItems = mapToClothingItems(data.items);
     const priceInfo: PriceStripItem[] = data.items.map((it) => ({
       title: it.title,
@@ -47,14 +56,14 @@ export function processToolResult(data: ToolResultData): ProcessedToolResult | n
     }));
     const outfitName = data.outfit_name || "";
 
-    // If flat lay generation succeeded, use canvas overlay
-    if (canvasItems.length > 0) {
-      return { canvasItems, carouselCards: [], priceInfo, outfitName };
+    // Always populate carousel cards for immediate visual feedback
+    const carouselCards = mapItemsToCards(data.items);
+
+    if (canvasItems.length === 0 && data.items.length > 0) {
+      console.warn(`[MirrorV2:ToolResult] ⚠ ALL ${data.items.length} items filtered out by mapToClothingItems! Canvas will be empty. Likely causes: missing type field, or no cleaned_image_url/flat_image_url (Gemini flat lay generation may have failed).`);
     }
 
-    // Fallback: no flat lays available, show as carousel cards instead
-    const carouselCards = mapItemsToCards(data.items);
-    return { canvasItems: [], carouselCards, priceInfo, outfitName };
+    return { canvasItems, carouselCards, priceInfo, outfitName };
   }
 
   if (data.type === "clothing_results") {
@@ -63,6 +72,7 @@ export function processToolResult(data: ToolResultData): ProcessedToolResult | n
     return { canvasItems: [], carouselCards, priceInfo: [], outfitName: "" };
   }
 
+  console.warn("[MirrorV2:ToolResult] Unknown tool type:", data.type);
   return null;
 }
 

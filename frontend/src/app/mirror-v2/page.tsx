@@ -7,8 +7,9 @@ import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { usePoseDetection } from "@/hooks/usePoseDetection";
 import { useMiraVideoAvatar } from "@/hooks/useMiraVideoAvatar";
+import type { MiraEmotion } from "@/components/ui/mira-video-avatar";
 import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
-import { parseEmotionTag, detectEmotionFromText } from "@/lib/emotion-parser";
+import { detectEmotionFromText } from "@/lib/emotion-parser";
 import { MiraVideoAvatar } from "@/components/ui/mira-video-avatar";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
 import { ClothingCanvas, type FitMethod } from "@/components/mirror/ClothingCanvas";
@@ -35,6 +36,7 @@ interface ActiveUser {
 
 const PHONE_URL = process.env.NEXT_PUBLIC_PHONE_URL || "https://mirrorless.vercel.app/phone";
 const WAITING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+const HOLD_DURATION_MS = 2000;
 const CANVAS_WIDTH = 1920;
 const CANVAS_HEIGHT = 1080;
 
@@ -60,6 +62,13 @@ function MirrorV2Page() {
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
   const gestureKeyRef = useRef(0);
   const [gestureKey, setGestureKey] = useState(0);
+  const [pendingGestureType, setPendingGestureType] = useState<GestureType | null>(null);
+  const holdKeyRef = useRef(0);
+  const [holdKey, setHoldKey] = useState(0);
+  const holdStartRef = useRef<number | null>(null);
+  const holdGestureRef = useRef<GestureType | null>(null);
+  const holdLastSeenRef = useRef<number>(0);
+  const holdRafRef = useRef<number>(0);
 
   // ── Session state ──
   const [sessionActive, setSessionActive] = useState(false);
@@ -81,7 +90,7 @@ function MirrorV2Page() {
   // ── Outfit opacity for fade-in ──
   const [outfitOpacity, setOutfitOpacity] = useState(1);
 
-  // ── Product carousel (fallback when no flat lays / from present_items) ──
+  // ── Product carousel (fallback when no flat lays available) ──
   const [carouselItems, setCarouselItems] = useState<ProductCard[]>([]);
 
   // ── Debug overlay ──
@@ -114,11 +123,19 @@ function MirrorV2Page() {
   const sentenceBufferRef = useRef<string>("");
   // Track emotion for the current response (parsed from first chunk)
   const currentEmotionRef = useRef<string>("idle");
-  // Track whether emotion has been parsed for this response
-  const emotionParsedRef = useRef(false);
+  // Track whether emotion has been detected for this response
+  const emotionDetectedRef = useRef(false);
+
+  // Track whether we just interrupted Mira (ignore stale mira_speech chunks)
+  const interruptedRef = useRef(false);
 
   // Current user ID for session
   const userId = activeUser?.id ?? null;
+
+  // ── Log kiosk state transitions ──
+  useEffect(() => {
+    console.log("[MirrorV2:State]", kioskState, activeUser ? `user=${activeUser.name}` : "");
+  }, [kioskState, activeUser]);
 
   // ── Pose detection callback ──
   const handlePoseUpdate = useCallback((result: PoseResult) => {
@@ -141,7 +158,18 @@ function MirrorV2Page() {
     socket.connect();
     socket.emit("join_mirror_room");
 
+    const onConnect = () => console.log("[MirrorV2:Socket] Connected, id:", socket.id);
+    const onConnectError = (err: Error) => console.error("[MirrorV2:Socket] Connection error:", err.message);
+    const onDisconnect = (reason: string) => console.warn("[MirrorV2:Socket] Disconnected:", reason);
+
+    socket.on("connect", onConnect);
+    socket.on("connect_error", onConnectError);
+    socket.on("disconnect", onDisconnect);
+
     return () => {
+      socket.off("connect", onConnect);
+      socket.off("connect_error", onConnectError);
+      socket.off("disconnect", onDisconnect);
       socket.disconnect();
     };
   }, []);
@@ -243,14 +271,20 @@ function MirrorV2Page() {
         remaining = remaining.slice(endIdx);
 
         if (sentence) {
-          mira.speakQueued(sentence, emotion as ReturnType<typeof parseEmotionTag>["emotion"]);
-
-          // Show sentence on screen immediately
-          setSpeechText(sentence);
-          setSpeechVisible(true);
-          if (speechFadeTimerRef.current) {
-            clearTimeout(speechFadeTimerRef.current);
-          }
+          // Capture sentence in closure for the onStart callback
+          const displaySentence = sentence;
+          mira.speakQueued(
+            sentence,
+            emotion as MiraEmotion,
+            () => {
+              // Fires when TTS actually starts playing this sentence
+              setSpeechText(displaySentence);
+              setSpeechVisible(true);
+              if (speechFadeTimerRef.current) {
+                clearTimeout(speechFadeTimerRef.current);
+              }
+            },
+          );
         }
       }
 
@@ -258,6 +292,14 @@ function MirrorV2Page() {
     }
 
     const handleSpeech = (data: { text?: string; is_chunk?: boolean }) => {
+      // Ignore stale chunks from the pre-interrupt response
+      if (interruptedRef.current) {
+        if (data.is_chunk === false) {
+          interruptedRef.current = false; // Old response ended
+        }
+        return;
+      }
+
       // Fallback session detection
       if (!sessionActive && !isStarting) {
         setKioskState("session");
@@ -273,20 +315,12 @@ function MirrorV2Page() {
 
         sentenceBufferRef.current += data.text;
 
-        // Parse emotion from first chunk (where [emotion:X] tag appears)
-        if (!emotionParsedRef.current) {
-          const { emotion, cleanText } = parseEmotionTag(sentenceBufferRef.current);
-          if (emotion !== "idle") {
-            currentEmotionRef.current = emotion;
-            emotionParsedRef.current = true;
-            sentenceBufferRef.current = cleanText;
-          } else {
-            // Try keyword detection on accumulated text
-            const detected = detectEmotionFromText(sentenceBufferRef.current);
-            if (detected !== "idle") {
-              currentEmotionRef.current = detected;
-              emotionParsedRef.current = true;
-            }
+        // Detect emotion from keywords in accumulated text
+        if (!emotionDetectedRef.current) {
+          const detected = detectEmotionFromText(sentenceBufferRef.current);
+          if (detected !== "idle") {
+            currentEmotionRef.current = detected;
+            emotionDetectedRef.current = true;
           }
         }
 
@@ -301,24 +335,27 @@ function MirrorV2Page() {
           sentenceBufferRef.current += data.text;
         }
 
-        // Parse emotion if we haven't yet (short responses)
-        if (!emotionParsedRef.current) {
-          const { emotion, cleanText } = parseEmotionTag(sentenceBufferRef.current);
-          currentEmotionRef.current = emotion === "idle"
-            ? detectEmotionFromText(sentenceBufferRef.current)
-            : emotion;
-          sentenceBufferRef.current = emotion !== "idle" ? cleanText : sentenceBufferRef.current;
+        // Detect emotion if we haven't yet (short responses)
+        if (!emotionDetectedRef.current) {
+          currentEmotionRef.current = detectEmotionFromText(sentenceBufferRef.current);
         }
 
         // Flush any remaining text as the final sentence
         const remainder = sentenceBufferRef.current.trim();
         if (remainder) {
-          mira.speakQueued(remainder, currentEmotionRef.current as ReturnType<typeof parseEmotionTag>["emotion"]);
-          setSpeechText(remainder);
-          setSpeechVisible(true);
-          if (speechFadeTimerRef.current) {
-            clearTimeout(speechFadeTimerRef.current);
-          }
+          const displayRemainder = remainder;
+          mira.speakQueued(
+            remainder,
+            currentEmotionRef.current as MiraEmotion,
+            () => {
+              // Fires when TTS actually starts playing this sentence
+              setSpeechText(displayRemainder);
+              setSpeechVisible(true);
+              if (speechFadeTimerRef.current) {
+                clearTimeout(speechFadeTimerRef.current);
+              }
+            },
+          );
         }
 
         // Signal end of queue — drain callback will reset avatar state
@@ -327,7 +364,7 @@ function MirrorV2Page() {
         // Reset for next response
         sentenceBufferRef.current = "";
         currentEmotionRef.current = "idle";
-        emotionParsedRef.current = false;
+        emotionDetectedRef.current = false;
       }
     };
 
@@ -364,11 +401,22 @@ function MirrorV2Page() {
       outfit_name?: string;
     }) => {
       const result = processToolResult(data);
-      if (!result) return;
+      if (!result) {
+        console.warn("[MirrorV2:ToolResult] Ignored — processToolResult returned null for:", data.type, data);
+        return;
+      }
+      console.log("[MirrorV2:ToolResult] Processed:", data.type, "canvas:", result.canvasItems.length, "carousel:", result.carouselCards.length);
 
-      // Canvas overlay (display_product with flat lays)
+      // Always show carousel cards (doesn't need pose detection)
+      if (result.carouselCards.length > 0) {
+        setCarouselItems(result.carouselCards);
+      }
+
+      // Additionally populate canvas overlay (renders when pose available)
+      if (result.canvasItems.length > 0 && !currentPose) {
+        console.warn("[MirrorV2:ToolResult] Canvas items received but currentPose is null — overlay won't render until pose is detected");
+      }
       if (result.canvasItems.length > 0) {
-        setCarouselItems([]);
         setOutfitOpacity(0);
         setCanvasOutfits((prev) => {
           const next = [
@@ -387,12 +435,6 @@ function MirrorV2Page() {
             setOutfitOpacity(1);
           });
         });
-        return;
-      }
-
-      // Carousel cards (clothing_results or display_product fallback)
-      if (result.carouselCards.length > 0) {
-        setCarouselItems(result.carouselCards);
       }
     };
 
@@ -460,18 +502,28 @@ function MirrorV2Page() {
     }
   }, [mira.isSpeaking, userId]);
 
-  // ── Forward final STT transcripts ──
+  // ── Forward final STT transcripts (interrupt Mira if speaking) ──
   useEffect(() => {
     if (!stt.transcript || !userId) return;
 
     if (mira.isSpeaking) {
-      pendingTranscriptRef.current = stt.transcript;
-    } else {
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: { type: "voice", transcript: stt.transcript },
-      });
+      // INTERRUPT: stop TTS/avatar and tell backend to abort the stream
+      mira.stop();
+      interruptedRef.current = true;
+      sentenceBufferRef.current = "";
+      currentEmotionRef.current = "idle";
+      emotionDetectedRef.current = false;
+      setSpeechText("");
+      setSpeechVisible(false);
+      socket.emit("interrupt", { user_id: userId });
     }
+
+    // Always send transcript immediately (whether interrupting or not)
+    socket.emit("mirror_event", {
+      user_id: userId,
+      event: { type: "voice", transcript: stt.transcript },
+    });
+    pendingTranscriptRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stt.transcript, userId]);
 
@@ -492,9 +544,8 @@ function MirrorV2Page() {
       const base64 = dataUrl.split(",")[1];
 
       socket.emit("mirror_event", {
-        type: "snapshot",
-        image_base64: base64,
         user_id: userId,
+        event: { type: "snapshot", image_base64: base64 },
       });
     };
 
@@ -507,30 +558,96 @@ function MirrorV2Page() {
   // ── Gesture handler ──
   const handleGesture = useCallback(
     (gesture: DetectedGesture) => {
-      setLastGesture(gesture.type);
-      gestureKeyRef.current += 1;
-      setGestureKey(gestureKeyRef.current);
+      // Swipes → dispatch immediately (unchanged behavior)
+      if (gesture.type === "swipe_left" || gesture.type === "swipe_right") {
+        setLastGesture(gesture.type);
+        gestureKeyRef.current += 1;
+        setGestureKey(gestureKeyRef.current);
 
-      if (canvasOutfits.length > 1) {
-        if (gesture.type === "swipe_left") {
-          setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
-        } else if (gesture.type === "swipe_right") {
-          setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+        if (canvasOutfits.length > 1) {
+          if (gesture.type === "swipe_left") {
+            setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
+          } else if (gesture.type === "swipe_right") {
+            setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+          }
         }
+
+        socket.emit("mirror_event", {
+          user_id: userId,
+          event: {
+            type: "gesture",
+            gesture: gesture.type,
+            confidence: gesture.confidence,
+            timestamp: gesture.timestamp,
+          },
+        });
+        return;
       }
 
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: {
-          type: "gesture",
-          gesture: gesture.type,
-          confidence: gesture.confidence,
-          timestamp: gesture.timestamp,
-        },
-      });
+      // Thumbs → hold-to-confirm (update last-seen time each frame)
+      const now = Date.now();
+      holdLastSeenRef.current = now;
+
+      // If gesture type changed, reset and start a fresh hold
+      if (holdGestureRef.current !== gesture.type) {
+        holdGestureRef.current = gesture.type;
+        holdStartRef.current = now;
+        setPendingGestureType(gesture.type);
+        holdKeyRef.current += 1;
+        setHoldKey(holdKeyRef.current);
+      }
     },
     [userId, canvasOutfits.length],
   );
+
+  // ── Hold-to-confirm timer loop (rAF) ──
+  // The visual ring animation is CSS-driven; this loop only handles
+  // staleness cancellation and dispatching at completion.
+  useEffect(() => {
+    const tick = () => {
+      holdRafRef.current = requestAnimationFrame(tick);
+
+      if (!holdGestureRef.current || !holdStartRef.current) return;
+
+      const now = Date.now();
+
+      // If gesture hasn't been seen in 300ms, cancel the hold
+      if (now - holdLastSeenRef.current > 300) {
+        holdGestureRef.current = null;
+        holdStartRef.current = null;
+        setPendingGestureType(null);
+        return;
+      }
+
+      // Hold completed → dispatch the gesture event
+      const elapsed = now - holdStartRef.current;
+      if (elapsed >= HOLD_DURATION_MS) {
+        const gestureType = holdGestureRef.current;
+
+        setLastGesture(gestureType);
+        gestureKeyRef.current += 1;
+        setGestureKey(gestureKeyRef.current);
+
+        socket.emit("mirror_event", {
+          user_id: userId,
+          event: {
+            type: "gesture",
+            gesture: gestureType,
+            confidence: 1,
+            timestamp: Date.now(),
+          },
+        });
+
+        // Reset hold state
+        holdGestureRef.current = null;
+        holdStartRef.current = null;
+        setPendingGestureType(null);
+      }
+    };
+
+    holdRafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(holdRafRef.current);
+  }, [userId]);
 
   useGestureRecognizer({
     videoRef,
@@ -548,7 +665,10 @@ function MirrorV2Page() {
       switch (e.key) {
         case "d":
         case "D":
-          setDebugMode((d) => !d);
+          setDebugMode((d) => {
+            console.log(`[Mirror] Debug overlay ${d ? "OFF" : "ON"}`);
+            return !d;
+          });
           break;
 
         case "f":
@@ -792,8 +912,8 @@ function MirrorV2Page() {
         </div>
       )}
 
-      {/* Debug overlay (z-6, toggle with 'd') */}
-      <div style={{ position: "absolute", inset: 0, zIndex: 6 }}>
+      {/* Debug overlay (z-6 normally, z-50 when active to render above attract/waiting overlays) */}
+      <div style={{ position: "absolute", inset: 0, zIndex: debugMode ? 50 : 6 }}>
         <DebugOverlay
           pose={currentPose}
           items={activeCanvasOutfit}
@@ -826,13 +946,13 @@ function MirrorV2Page() {
         <SpeechDisplay text={speechText} visible={speechVisible} />
       )}
 
-      {/* Product carousel fallback (z-10, bottom) */}
-      {sessionActive && carouselItems.length > 0 && (
+      {/* Product carousel (z-10, bottom) — hidden when canvas overlay is active on body */}
+      {sessionActive && carouselItems.length > 0 && !(activeCanvasOutfit.length > 0 && currentPose) && (
         <ProductCarousel items={carouselItems} onGesture={handleCarouselGesture} />
       )}
 
-      {/* Price strip (z-15, bottom) — hidden when carousel is showing */}
-      {sessionActive && activePriceItems.length > 0 && carouselItems.length === 0 && (
+      {/* Price strip (z-15, bottom) — shows when canvas overlay is active */}
+      {sessionActive && activePriceItems.length > 0 && activeCanvasOutfit.length > 0 && currentPose && (
         <PriceStrip items={activePriceItems} />
       )}
 
@@ -848,7 +968,12 @@ function MirrorV2Page() {
       )}
 
       {/* Gesture visual feedback (z-20, center) */}
-      <GestureIndicator key={gestureKey} gesture={lastGesture} />
+      <GestureIndicator
+        gesture={lastGesture}
+        gestureKey={gestureKey}
+        pendingGesture={pendingGestureType}
+        holdKey={holdKey}
+      />
 
       {/* === RECAP STATE === (z-25) */}
       {recapData && (

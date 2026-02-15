@@ -17,6 +17,7 @@ export function usePoseDetection({
   const [error, setError] = useState<string | null>(null);
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const animFrameRef = useRef<number>(0);
+  const videoNotReadyWarnedRef = useRef(false);
   const onPoseUpdateRef = useRef(onPoseUpdate);
   onPoseUpdateRef.current = onPoseUpdate;
 
@@ -50,8 +51,10 @@ export function usePoseDetection({
 
         poseLandmarkerRef.current = poseLandmarker;
         setIsLoading(false);
+        console.log("[MirrorV2:Pose] Model loaded");
       } catch (err) {
         if (!cancelled) {
+          console.error("[MirrorV2:Pose] Model load failed:", err);
           setError(
             err instanceof Error ? err.message : "Failed to load pose model"
           );
@@ -81,6 +84,10 @@ export function usePoseDetection({
     function detectPose() {
       const pl = poseLandmarkerRef.current;
       if (!pl || !video || video.readyState < 2) {
+        if (!videoNotReadyWarnedRef.current && video && video.readyState < 2) {
+          console.warn("[MirrorV2:Pose] Video not ready, waiting...");
+          videoNotReadyWarnedRef.current = true;
+        }
         animFrameRef.current = requestAnimationFrame(detectPose);
         return;
       }
@@ -105,8 +112,8 @@ export function usePoseDetection({
             timestamp: now,
           });
         }
-      } catch {
-        // Skip frame on error
+      } catch (err) {
+        console.warn("[MirrorV2:Pose] Frame error:", err);
       }
 
       animFrameRef.current = requestAnimationFrame(detectPose);

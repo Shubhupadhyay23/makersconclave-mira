@@ -61,10 +61,12 @@ export function useCamera(): UseCameraResult {
 
         if (cancelled) return;
 
+        console.log("[MirrorV2:Camera] Stream acquired, stereo:", isStereoCamera(rawVideo));
+
         if (isStereoCamera(rawVideo)) {
           // Stereo camera detected — crop to left lens
           console.log(
-            `[useCamera] Stereo camera detected: ${rawVideo.videoWidth}x${rawVideo.videoHeight}, cropping to left lens`
+            `[MirrorV2:Camera] Stereo camera detected: ${rawVideo.videoWidth}x${rawVideo.videoHeight}, cropping to left lens`
           );
 
           const cropCanvas = document.createElement("canvas");
@@ -90,23 +92,34 @@ export function useCamera(): UseCameraResult {
 
           if (videoRef.current) {
             videoRef.current.srcObject = croppedStream;
-            await videoRef.current.play();
+            try {
+              await videoRef.current.play();
+            } catch (playErr) {
+              console.error("[MirrorV2:Camera] play() rejected:", playErr instanceof Error ? playErr.message : playErr);
+            }
             setIsReady(true);
+            console.log("[MirrorV2:Camera] Ready");
           }
         } else {
           // Normal single-lens camera — use directly
           console.log(
-            `[useCamera] Normal camera: ${rawVideo.videoWidth}x${rawVideo.videoHeight}`
+            `[MirrorV2:Camera] Normal camera: ${rawVideo.videoWidth}x${rawVideo.videoHeight}`
           );
 
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
-            await videoRef.current.play();
+            try {
+              await videoRef.current.play();
+            } catch (playErr) {
+              console.error("[MirrorV2:Camera] play() rejected:", playErr instanceof Error ? playErr.message : playErr);
+            }
             setIsReady(true);
+            console.log("[MirrorV2:Camera] Ready");
           }
         }
       } catch (err) {
         if (!cancelled) {
+          console.error("[MirrorV2:Camera] getUserMedia failed:", err instanceof Error ? err.message : err);
           setError(err instanceof Error ? err.message : "Camera access denied");
         }
       }

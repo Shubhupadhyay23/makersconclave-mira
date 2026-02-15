@@ -13,10 +13,16 @@ from PIL import Image
 from rembg import new_session, remove
 
 
-@lru_cache(maxsize=1)
 def _get_session():
-    """Lazily create and cache the rembg model session."""
-    return new_session("u2net")
+    """Return the cached rembg model session (eagerly loaded at import time)."""
+    return _REMBG_SESSION
+
+
+# Download and cache the u2net model at import time so it never
+# stalls mid-demo waiting for a ~170 MB download.
+print("[rembg] Loading u2net model...")
+_REMBG_SESSION = new_session("u2net")
+print("[rembg] u2net model ready")
 
 
 def _remove_bg(image_bytes: bytes) -> bytes:

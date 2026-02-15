@@ -11,7 +11,7 @@ export interface UseMiraVideoAvatarReturn {
   avatarState: MiraAvatarState;
   isSpeaking: boolean;
   speak: (text: string, emotion?: MiraEmotion) => void;
-  speakQueued: (text: string, emotion?: MiraEmotion) => void;
+  speakQueued: (text: string, emotion?: MiraEmotion, onStart?: () => void) => void;
   flushQueue: () => void;
   setEmotion: (emotion: MiraEmotion) => void;
   setAvatarState: (state: MiraAvatarState) => void;
@@ -61,7 +61,10 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
 
   const speak = useCallback(
     (text: string, speakEmotion: MiraEmotion = "idle") => {
-      if (!text.trim() || !ttsRef.current) return;
+      if (!text.trim() || !ttsRef.current) {
+        console.warn("[MirrorV2:TTS] speak skipped — empty text or no TTS");
+        return;
+      }
 
       // Set emotion and switch to speaking state
       setEmotionInternal(speakEmotion);
@@ -69,18 +72,18 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
       setIsSpeaking(true);
       setOrbStateInternal("speaking");
 
-      console.log(`[MiraVideoAvatar] Speaking (emotion=${speakEmotion}):`, text.slice(0, 80));
+      console.log(`[MirrorV2:TTS] Speaking (emotion=${speakEmotion}):`, text.slice(0, 80));
 
       ttsRef.current
         .speak(
           text,
           () => {
             // onStart — audio playback has begun
-            console.log("[MiraVideoAvatar] Playback started");
+            console.log("[MirrorV2:TTS] Playback started");
           },
           () => {
             // onEnd — audio playback finished
-            console.log("[MiraVideoAvatar] Playback finished");
+            console.log("[MirrorV2:TTS] Playback finished");
             setIsSpeaking(false);
             setAvatarStateInternal("idle");
             setOrbStateInternal("idle");
@@ -90,7 +93,8 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
             }, 500);
           }
         )
-        .catch(() => {
+        .catch((err: unknown) => {
+          console.error("[MirrorV2:TTS] speak() failed:", err instanceof Error ? err.message : err);
           setIsSpeaking(false);
           setAvatarStateInternal("idle");
           setEmotionInternal("idle");
@@ -106,19 +110,22 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
    * Call flushQueue() when all sentences have been enqueued (end-of-message).
    */
   const speakQueued = useCallback(
-    (text: string, speakEmotion: MiraEmotion = "idle") => {
-      if (!text.trim() || !ttsRef.current) return;
+    (text: string, speakEmotion: MiraEmotion = "idle", onStart?: () => void) => {
+      if (!text.trim() || !ttsRef.current) {
+        console.warn("[MirrorV2:TTS] speakQueued skipped — empty text or no TTS");
+        return;
+      }
 
       setEmotionInternal(speakEmotion);
       setAvatarStateInternal("speaking");
       setIsSpeaking(true);
       setOrbStateInternal("speaking");
 
-      console.log(`[MiraVideoAvatar] Queuing sentence (emotion=${speakEmotion}):`, text.slice(0, 60));
+      console.log(`[MirrorV2:TTS] Queuing sentence (emotion=${speakEmotion}):`, text.slice(0, 60));
 
       ttsRef.current.speakQueued(
         text,
-        undefined,
+        onStart,
         undefined,
       );
     },
@@ -133,7 +140,7 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
     if (!ttsRef.current) return;
 
     ttsRef.current.onAllDone(() => {
-      console.log("[MiraVideoAvatar] Queue drained — all sentences played");
+      console.log("[MirrorV2:TTS] Queue drained — all sentences played");
       setIsSpeaking(false);
       setAvatarStateInternal("idle");
       setOrbStateInternal("idle");
@@ -153,9 +160,13 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
 
   const startSession = useCallback(() => {
     if (ttsRef.current) return;
-    const tts = new StreamingTTS(API_URL);
-    ttsRef.current = tts;
-    console.log("[MiraVideoAvatar] Session started");
+    try {
+      const tts = new StreamingTTS(API_URL);
+      ttsRef.current = tts;
+      console.log("[MirrorV2:TTS] StreamingTTS initialized");
+    } catch (err) {
+      console.error("[MirrorV2:TTS] Init failed:", err instanceof Error ? err.message : err);
+    }
   }, []);
 
   const stopSession = useCallback(() => {
@@ -165,7 +176,7 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
     setAvatarStateInternal("idle");
     setEmotionInternal("idle");
     setOrbStateInternal("idle");
-    console.log("[MiraVideoAvatar] Session stopped");
+    console.log("[MirrorV2:TTS] Session stopped");
   }, []);
 
   // Cleanup on unmount

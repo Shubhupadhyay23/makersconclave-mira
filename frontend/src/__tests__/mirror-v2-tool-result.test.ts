@@ -36,7 +36,7 @@ describe("processToolResult", () => {
     expect(result!.canvasItems[1]).toEqual(
       expect.objectContaining({ id: "p2", category: "bottoms" }),
     );
-    expect(result!.carouselCards).toHaveLength(0);
+    expect(result!.carouselCards).toHaveLength(2);
     expect(result!.priceInfo).toHaveLength(2);
     expect(result!.outfitName).toBe("Casual Friday");
   });

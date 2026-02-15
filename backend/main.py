@@ -408,6 +408,12 @@ async def mirror_event(sid, data):
     """Handle events from the mirror (voice, gesture, pose, snapshot)."""
     user_id = data.get("user_id")
     event = data.get("event", {})
+
+    # Backward-compat: legacy frontend sends snapshot at top level instead of
+    # nested under "event". Detect and wrap it so the orchestrator receives it.
+    if not event and data.get("type") == "snapshot":
+        event = {"type": "snapshot", "image_base64": data.get("image_base64", "")}
+
     if not user_id or not event:
         return
     event_type = event.get("type", "unknown")
@@ -420,6 +426,15 @@ async def mirror_event(sid, data):
     except Exception as e:
         print(f"[mira] mirror_event failed for {user_id}: {e}")
         await sio.emit("session_error", {"error": f"Event processing failed: {e}"}, to=sid)
+
+
+@sio.event
+async def interrupt(sid, data):
+    """Interrupt Mira's current response so the user can speak."""
+    user_id = data.get("user_id")
+    if user_id:
+        print(f"[socket] interrupt from {user_id}")
+        await mira.interrupt(user_id)
 
 
 @sio.event

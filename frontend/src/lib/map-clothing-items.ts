@@ -16,7 +16,17 @@ export interface DisplayProductItem {
  */
 export function mapToClothingItems(items: DisplayProductItem[]): ClothingItem[] {
   const catMap: Record<string, "tops" | "bottoms"> = { top: "tops", bottom: "bottoms" };
-  return items
+
+  // Log each item's readiness for canvas overlay
+  for (const item of items) {
+    const hasType = item.type === "top" || item.type === "bottom";
+    const hasFlatLay = !!(item.cleaned_image_url || item.flat_image_url);
+    console.log(
+      `[MirrorV2:MapClothing] Item "${item.title}" — type=${item.type ?? "MISSING"} (${hasType ? "OK" : "FILTERED"}) flatLay=${hasFlatLay ? "YES" : "NO"} cleaned=${item.cleaned_image_url ? "yes" : "no"} flat=${item.flat_image_url ? "yes" : "no"}`
+    );
+  }
+
+  const result = items
     .filter((i) => i.type === "top" || i.type === "bottom")
     .filter((i) => i.cleaned_image_url || i.flat_image_url) // flat lays only
     .map((i) => ({
@@ -25,4 +35,7 @@ export function mapToClothingItems(items: DisplayProductItem[]): ClothingItem[] 
       imageUrl: i.cleaned_image_url || i.flat_image_url || "",
       name: i.title,
     }));
+
+  console.log(`[MirrorV2:MapClothing] ${items.length} items in → ${result.length} canvas items out (${items.length - result.length} filtered)`);
+  return result;
 }
