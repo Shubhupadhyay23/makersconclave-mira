@@ -11,7 +11,7 @@ export interface UseMiraVideoAvatarReturn {
   avatarState: MiraAvatarState;
   isSpeaking: boolean;
   speak: (text: string, emotion?: MiraEmotion) => void;
-  speakQueued: (text: string, emotion?: MiraEmotion) => void;
+  speakQueued: (text: string, emotion?: MiraEmotion, onStart?: () => void) => void;
   flushQueue: () => void;
   setEmotion: (emotion: MiraEmotion) => void;
   setAvatarState: (state: MiraAvatarState) => void;
@@ -110,7 +110,7 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
    * Call flushQueue() when all sentences have been enqueued (end-of-message).
    */
   const speakQueued = useCallback(
-    (text: string, speakEmotion: MiraEmotion = "idle") => {
+    (text: string, speakEmotion: MiraEmotion = "idle", onStart?: () => void) => {
       if (!text.trim() || !ttsRef.current) {
         console.warn("[MirrorV2:TTS] speakQueued skipped — empty text or no TTS");
         return;
@@ -125,7 +125,7 @@ export function useMiraVideoAvatar(): UseMiraVideoAvatarReturn {
 
       ttsRef.current.speakQueued(
         text,
-        undefined,
+        onStart,
         undefined,
       );
     },

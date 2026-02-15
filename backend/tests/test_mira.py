@@ -110,6 +110,62 @@ async def test_search_clothing_tool():
     print("PASSED - present_items creates frontend_payload for Socket.io broadcast")
 
 
+def _mock_tool_result(tool_name: str) -> str:
+    """Return a mock tool result for live integration tests."""
+    mock_results = {
+        "take_photo": "Photo captured successfully. The user is wearing a black hoodie and jeans.",
+        "search_clothing": json.dumps({"results": [
+            {"title": "Classic Black Tee", "source": "Zara", "price": "$29.99",
+             "image_url": "https://example.com/tee.jpg", "link": "https://example.com/tee",
+             "product_id": "mock-001", "rating": 4.5},
+        ]}),
+        "present_items": json.dumps({"presented": 1, "items": []}),
+    }
+    return mock_results.get(tool_name, json.dumps({"status": "ok"}))
+
+
+async def _resolve_tool_chain(client, system_prompt, messages, max_rounds=3):
+    """Make Claude calls, providing mock tool_results until no more tool_use blocks.
+
+    Returns (final_messages, final_response) where final_messages has alternating
+    user/assistant roles with all tool results resolved.
+    """
+    msgs = list(messages)
+    last_response = None
+
+    for _ in range(max_rounds):
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system=system_prompt,
+            messages=msgs,
+            tools=TOOL_DEFINITIONS,
+        )
+        last_response = resp
+
+        for block in resp.content:
+            if hasattr(block, "text"):
+                print(f"Mira: {block.text}")
+            elif block.type == "tool_use":
+                print(f"[Tool call: {block.name}({json.dumps(block.input)})]")
+
+        msgs.append({"role": "assistant", "content": resp.content})
+
+        # Check if there are tool_use blocks that need resolving
+        tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
+        if not tool_uses:
+            break
+
+        # Provide mock tool results
+        tool_results = [
+            {"type": "tool_result", "tool_use_id": tu.id, "content": _mock_tool_result(tu.name)}
+            for tu in tool_uses
+        ]
+        msgs.append({"role": "user", "content": tool_results})
+
+    return msgs, last_response
+
+
 async def test_claude_with_mira():
     """Test a real Claude API call with Mira's personality and tools."""
     print("\n=== TEST 3: Live Claude Call as Mira ===\n")
@@ -133,25 +189,13 @@ async def test_claude_with_mira():
         session_history=MOCK_PAST_SESSIONS,
     )
 
-    # Test 1: Session opener
+    # Test 1: Session opener — resolve any tool chains (take_photo → search_clothing → ...)
     print("--- Mira's Opening Line ---")
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=200,
-        system=system_prompt,
-        messages=[
-            {"role": "user", "content": "A new user just stepped up to the mirror. Introduce yourself and start the session."},
-        ],
-        tools=TOOL_DEFINITIONS,
+    base_messages, last_resp = await _resolve_tool_chain(
+        client, system_prompt,
+        [{"role": "user", "content": "A new user just stepped up to the mirror. Introduce yourself and start the session."}],
     )
-
-    for block in response.content:
-        if hasattr(block, "text"):
-            print(f"Mira: {block.text}")
-        elif block.type == "tool_use":
-            print(f"[Tool call: {block.name}({json.dumps(block.input)})]")
-
-    print(f"\nTokens used: {response.usage.input_tokens} in / {response.usage.output_tokens} out")
+    print(f"\nTokens used: {last_resp.usage.input_tokens} in / {last_resp.usage.output_tokens} out")
 
     # Test 2: Gesture response (thumbs down)
     print("\n--- Mira Reacts to Thumbs Down ---")
@@ -159,9 +203,7 @@ async def test_claude_with_mira():
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
         system=system_prompt,
-        messages=[
-            {"role": "user", "content": "A new user just stepped up to the mirror. Introduce yourself."},
-            {"role": "assistant", "content": response.content},
+        messages=base_messages + [
             {"role": "user", "content": "The user gave a thumbs down (dislike this item)."},
         ],
         tools=TOOL_DEFINITIONS,
@@ -179,9 +221,7 @@ async def test_claude_with_mira():
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
         system=system_prompt,
-        messages=[
-            {"role": "user", "content": "A new user just stepped up to the mirror. Introduce yourself."},
-            {"role": "assistant", "content": response.content},
+        messages=base_messages + [
             {"role": "user", "content": "Show me some cool jackets for spring"},
         ],
         tools=TOOL_DEFINITIONS,

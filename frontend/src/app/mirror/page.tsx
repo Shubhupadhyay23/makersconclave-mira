@@ -363,9 +363,8 @@ function MirrorPage() {
       const base64 = dataUrl.split(",")[1];
 
       socket.emit("mirror_event", {
-        type: "snapshot",
-        image_base64: base64,
         user_id: userId,
+        event: { type: "snapshot", image_base64: base64 },
       });
     };
 

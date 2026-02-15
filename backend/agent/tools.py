@@ -246,6 +246,20 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "take_photo",
+        "description": (
+            "Capture a photo of the user standing at the mirror. Use this ONCE during "
+            "Phase 1 to transition into the outfit check — call it right after your opening "
+            "roast line. The photo is returned as an image you can react to. Do NOT call "
+            "this more than once per session."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "give_recommendation",
         "description": (
             "Search for clothing items from specific brands to build outfit recommendations. "
