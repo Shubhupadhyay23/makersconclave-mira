@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import socketio
 
-from routers import auth, queue, users, tts
+from routers import auth, queue, users, tts, admin
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
 from agent.orchestrator import MiraOrchestrator, generate_outfit_recommendations, update_outfit_reaction, _outfits_to_display_payloads
@@ -45,6 +45,7 @@ app.include_router(users.router)
 app.include_router(scraper_router)
 app.include_router(judges_router)
 app.include_router(tts.router)
+app.include_router(admin.router)
 
 # Make sio and Mira accessible to routes
 app.state.sio = sio
@@ -337,6 +338,26 @@ async def join_room(sid, data):
 
 
 @sio.event
+async def join_mirror_room(sid, data=None):
+    """Mirror display joins the 'mirror' broadcast room."""
+    await sio.enter_room(sid, "mirror")
+    _sid_to_user[sid] = "mirror"
+    print(f"[socket] {sid} joined mirror room")
+
+    # Send current queue state so the mirror doesn't miss already-active users
+    from routers.queue import get_queue_snapshot
+
+    db = await get_neon_client()
+    try:
+        snapshot = await get_queue_snapshot(db)
+        await sio.emit("queue_updated", snapshot, to=sid)
+    except Exception as e:
+        print(f"[socket] Failed to send queue snapshot to mirror: {e}")
+    finally:
+        await db.close()
+
+
+@sio.event
 async def disconnect(sid):
     print(f"[socket] Client disconnected: {sid}")
     user_id = _sid_to_user.pop(sid, None)
@@ -403,7 +424,7 @@ async def mirror_event(sid, data):
 
 @sio.event
 async def end_session(sid, data):
-    """End a Mira session."""
+    """End a Mira session and auto-advance the queue."""
     user_id = data.get("user_id")
     if not user_id:
         return
@@ -411,6 +432,80 @@ async def end_session(sid, data):
     result = await mira.end_session(user_id)
     if result:
         await sio.emit("session_recap", result, room=user_id)
+        await sio.emit("session_ended", result, room=user_id)
+
+    # Auto-advance queue: mark current active as completed, promote next
+    await _auto_advance_queue(user_id)
+
+
+@sio.event
+async def session_force_end(sid, data):
+    """Force-end session triggered by admin."""
+    user_id = data.get("user_id")
+    if not user_id:
+        return
+    print(f"[mira] Force-ending session for user {user_id}")
+    result = await mira.end_session(user_id)
+    if result:
+        await sio.emit("session_recap", result, room=user_id)
+        await sio.emit("session_ended", result, room=user_id)
+    await _auto_advance_queue(user_id)
+
+
+async def _auto_advance_queue(user_id: str):
+    """Complete the active queue user and advance the next one."""
+    from models.database import NeonHTTPClient
+    db = NeonHTTPClient()
+    try:
+        await db.execute(
+            "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
+            [user_id],
+        )
+        # Advance next waiting user
+        next_rows = await db.execute(
+            """
+            UPDATE queue SET status = 'active'
+            WHERE id = (
+                SELECT id FROM queue WHERE status = 'waiting'
+                ORDER BY position ASC LIMIT 1
+            )
+            RETURNING user_id
+            """,
+        )
+        # Build and emit queue snapshot
+        active_rows = await db.execute(
+            """
+            SELECT q.user_id, u.name FROM queue q
+            JOIN users u ON u.id = q.user_id
+            WHERE q.status = 'active' LIMIT 1
+            """,
+        )
+        active_user = None
+        if active_rows:
+            active_user = {"id": str(active_rows[0]["user_id"]), "name": active_rows[0]["name"]}
+
+        queue_rows = await db.execute(
+            """
+            SELECT q.id, q.user_id, u.name, q.position, q.status
+            FROM queue q JOIN users u ON u.id = q.user_id
+            WHERE q.status IN ('waiting', 'active')
+            ORDER BY q.position
+            """,
+        )
+        queue_list = [
+            {
+                "id": str(r["id"]),
+                "user_id": str(r["user_id"]),
+                "name": r["name"],
+                "position": r["position"],
+                "status": r["status"],
+            }
+            for r in (queue_rows or [])
+        ]
+        await sio.emit("queue_updated", {"active_user": active_user, "queue": queue_list}, room="mirror")
+        print(f"[queue] Advanced queue. Active: {active_user}")
+    finally:
+        await db.close()
 
 
 @sio.event
