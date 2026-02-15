@@ -10,12 +10,14 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Dict, Optional
 from uuid import uuid4
 
 import anthropic
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
-from agent.prompts import build_system_prompt
+from agent.prompts import build_system_prompt, build_recommendation_prompt, get_mira_system_prompt
 from agent.tools import TOOL_DEFINITIONS, execute_tool
 from agent.memory import (
     load_user_profile,
@@ -27,6 +29,11 @@ from agent.memory import (
     refresh_calendar_events,
 )
 from models.database import NeonHTTPClient
+from services.user_data_service import (
+    get_user_profile_and_purchases,
+    is_new_user,
+    save_outfits_to_database,
+)
 
 load_dotenv()
 
@@ -35,6 +42,9 @@ HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SILENCE_TIMEOUT_SECONDS = 5
 EVENT_BATCH_WINDOW_MS = 200
 SOFT_API_LIMIT = 20
+
+# Initialize Anthropic client for recommendation pipeline
+anthropic_client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 @dataclass
@@ -333,6 +343,7 @@ class MiraOrchestrator:
                     tool_input=tool_use.input,
                     user_context={
                         "user_id": session.user_id,
+                        "session_id": session.session_id,
                         "oauth_token": session.user_context.get("oauth_token"),
                     },
                 )
@@ -530,3 +541,221 @@ class MiraOrchestrator:
         task = self._silence_tasks.pop(user_id, None)
         if task and not task.done():
             task.cancel()
+
+
+# --- Recommendation Pipeline (standalone functions for REST endpoints) ---
+
+
+def _extract_json_from_text(text: str) -> Optional[dict]:
+    """Extract JSON from text that may contain markdown code blocks."""
+    try:
+        if "```json" in text:
+            json_start = text.find("```json") + 7
+            json_end = text.find("```", json_start)
+            return json.loads(text[json_start:json_end].strip())
+        elif "```" in text:
+            json_start = text.find("```") + 3
+            json_end = text.find("```", json_start)
+            return json.loads(text[json_start:json_end].strip())
+        else:
+            return json.loads(text.strip())
+    except json.JSONDecodeError:
+        try:
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            return json.loads(text[start:end])
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+
+async def generate_outfit_recommendations(
+    user_id: str, session_id: str, db: NeonHTTPClient
+) -> Dict:
+    """
+    Orchestrate the full recommendation flow.
+
+    1. Fetch user data (profile + purchases + top brands)
+    2. Handle new users (check if needs onboarding)
+    3. Call Serper directly to fetch clothing items
+    4. Send user context + clothing items to Claude in a single call
+    5. Parse final JSON response
+    6. Generate flat lay images + save to DB in parallel
+    7. Return results
+    """
+    from agent.tools import execute_give_recommendation, _select_diverse_items
+    from services.serper_cache import serper_cache
+
+    start_time = time.time()
+
+    try:
+        # Step 1: Fetch user data
+        user_data = await get_user_profile_and_purchases(db, user_id)
+        if not user_data:
+            return create_error_response("user_not_found", "Unknown User")
+
+        # Step 2: Check if new user needs onboarding
+        if await is_new_user(db, user_id):
+            return {
+                "status": "needs_onboarding",
+                "message": "User needs to complete onboarding questionnaire",
+            }
+
+        # Step 3: Call Serper directly (no Claude tool loop)
+        top_brands = user_data.get("top_brands", [])
+        style_profile = user_data.get("style_profile")
+        gender = "mens"
+        if style_profile:
+            gender = style_profile.get("gender", "mens")
+
+        tool_input = {"brands": top_brands[:5] if top_brands else [], "gender": gender}
+        print(f"[Mira] Fetching clothing from Serper (brands={tool_input['brands']}, gender={gender})")
+        clothing_text = await execute_give_recommendation(tool_input, session_id)
+
+        if clothing_text.startswith("Error:") or clothing_text.startswith("No clothing"):
+            return create_error_response("no_results", user_data["user"]["name"])
+
+        # Step 4: Single Claude call with clothing items already in the prompt
+        cached_items = serper_cache.get(session_id) or []
+        tops = [i for i in cached_items if i.get("clothing_category") == "top"]
+        bottoms = [i for i in cached_items if i.get("clothing_category") == "bottom"]
+        limited_items = _select_diverse_items(tops, 10) + _select_diverse_items(bottoms, 10)
+
+        system_prompt = get_mira_system_prompt()
+        user_prompt = build_recommendation_prompt(user_data, limited_items)
+
+        # Step 4b: Pre-generate flat lays for ALL candidate items in parallel with Claude
+        async def _pregenerate_flat_lays():
+            """Generate flat lays for all candidate items while Claude thinks."""
+            try:
+                from services.gemini_flatlay import generate_flat_lays_batch
+                items_for_flatlay = [
+                    {"image_url": i["image_url"], "title": i["title"], "product_id": i["product_id"]}
+                    for i in limited_items if i.get("image_url") and i.get("product_id")
+                ]
+                if items_for_flatlay:
+                    print(f"[Mira] Generating flat lay images for {len(items_for_flatlay)} items...")
+                    return await generate_flat_lays_batch(items_for_flatlay)
+            except ImportError:
+                print("[Mira] Gemini flat lay service not available, skipping")
+            except Exception as e:
+                print(f"[Mira] Flat lay generation failed (non-fatal): {e}")
+            return {}
+
+        # Run Claude + flat lays in parallel
+        claude_response, flat_lay_map = await asyncio.gather(
+            anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=6144,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            ),
+            _pregenerate_flat_lays(),
+        )
+
+        # Extract JSON from Claude response
+        recommendations = None
+        for block in claude_response.content:
+            if hasattr(block, "text"):
+                recommendations = _extract_json_from_text(block.text)
+                break
+
+        if not recommendations:
+            return create_error_response("api_error", user_data["user"]["name"])
+
+        # Step 5: Map flat lays to selected outfit items + save to DB
+        outfits = recommendations.get("outfits", [])
+
+        # Attach flat lay images to outfit items
+        for outfit in outfits:
+            for outfit_item in outfit.get("items", []):
+                item = outfit_item.get("item", {})
+                pid = item.get("product_id", "")
+                if pid in flat_lay_map:
+                    item["flat_image_url"] = flat_lay_map[pid]
+
+        outfit_ids = await save_outfits_to_database(db, session_id, outfits)
+
+        # Attach database IDs to each outfit in the response
+        for outfit in outfits:
+            name = outfit.get("outfit_name", "")
+            if name in outfit_ids:
+                outfit["id"] = outfit_ids[name]
+
+        # Step 6: Return results
+        generation_time_ms = int((time.time() - start_time) * 1000)
+
+        return {
+            "status": "success",
+            "data": recommendations,
+            "generation_time_ms": generation_time_ms,
+        }
+
+    except Exception as e:
+        print(f"Error generating recommendations: {e}")
+        return create_error_response("api_error", "there")
+
+
+def create_error_response(error_type: str, user_name: str) -> Dict:
+    """
+    Generate in-character error messages from Mira.
+
+    Types: "no_results", "new_user", "api_error", "no_brands", "user_not_found"
+    """
+    error_messages = {
+        "no_results": {
+            "status": "error",
+            "error_type": "no_results",
+            "message": f"Hey {user_name}! I tried searching for new pieces from your favorite brands, but I'm not finding much right now. This could be a temporary glitch with the shopping search. Want to try again in a minute?",
+        },
+        "new_user": {
+            "status": "needs_onboarding",
+            "message": f"Hi {user_name}! I'd love to help you pick out some outfits, but I don't know your style yet. Let's do a quick questionnaire so I can get to know your taste!",
+        },
+        "api_error": {
+            "status": "error",
+            "error_type": "api_error",
+            "message": f"Oof, {user_name} — something went wrong on my end. Technical difficulties! Give me a sec and let's try again.",
+        },
+        "no_brands": {
+            "status": "error",
+            "error_type": "no_brands",
+            "message": f"Hey {user_name}! I don't have any brands to search yet. Have you done any shopping recently, or want to tell me your favorite brands in the onboarding?",
+        },
+        "user_not_found": {
+            "status": "error",
+            "error_type": "user_not_found",
+            "message": "I can't find your profile. Are you logged in?",
+        },
+    }
+
+    return error_messages.get(error_type, error_messages["api_error"])
+
+
+async def update_outfit_reaction(
+    db: NeonHTTPClient, outfit_id: str, reaction: str
+) -> Dict:
+    """
+    Update user reaction for an outfit.
+
+    Args:
+        db: Database client
+        outfit_id: UUID of the outfit
+        reaction: "liked", "disliked", or "skipped"
+    """
+    try:
+        query = """
+            UPDATE session_outfits
+            SET reaction = $1
+            WHERE id = $2
+            RETURNING id
+        """
+        result = await db.execute(query, [reaction, outfit_id])
+
+        if not result:
+            return {"status": "error", "message": "Outfit not found"}
+
+        return {"status": "success"}
+
+    except Exception as e:
+        print(f"Error updating outfit reaction: {e}")
+        return {"status": "error", "message": "Failed to update reaction"}

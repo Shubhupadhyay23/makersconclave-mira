@@ -16,6 +16,7 @@ import ProductCarousel, {
 import { SentenceBuffer } from "@/lib/sentence-buffer";
 import { socket } from "@/lib/socket";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
+import type { RecommendationResponse, Outfit } from "@/lib/types";
 
 export default function MirrorPageWrapper() {
   return (
@@ -40,6 +41,11 @@ function MirrorPage() {
   const [isStarting, setIsStarting] = useState(false);
   const [products, setProducts] = useState<ProductCard[]>([]);
 
+  // Recommendation state (from main)
+  const [outfitData, setOutfitData] = useState<RecommendationResponse["data"] | null>(null);
+  const [outfitActiveIndex, setOutfitActiveIndex] = useState(0);
+  const outfits = outfitData?.outfits ?? [];
+
   // Avatar + voice
   const avatar = useLiveAvatar();
   const stt = useDeepgramSTT();
@@ -58,6 +64,15 @@ function MirrorPage() {
     [avatar.speak],
   );
 
+  // Auto-advance outfit carousel
+  useEffect(() => {
+    if (outfits.length <= 1) return;
+    const timer = setInterval(() => {
+      setOutfitActiveIndex((i) => (i + 1) % outfits.length);
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [outfits.length]);
+
   // Connect socket and join user room
   useEffect(() => {
     socket.connect();
@@ -66,7 +81,16 @@ function MirrorPage() {
       socket.emit("join_room", { user_id: userId });
     }
 
+    // Recommendation events (from main)
+    socket.on("outfits_ready", (result: RecommendationResponse) => {
+      if (result.status === "success" && result.data) {
+        setOutfitData(result.data);
+        setOutfitActiveIndex(0);
+      }
+    });
+
     return () => {
+      socket.off("outfits_ready");
       socket.disconnect();
     };
   }, [userId]);
@@ -355,6 +379,28 @@ function MirrorPage() {
         <ProductCarousel items={products} onGesture={handleProductGesture} />
       )}
 
+      {/* Outfit recommendation overlay (from recommendation pipeline) */}
+      {outfitData && outfits.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            zIndex: 15,
+            pointerEvents: "none",
+          }}
+        >
+          <OutfitsView
+            greeting={outfitData.greeting}
+            styleAnalysis={outfitData.style_analysis}
+            outfits={outfits}
+            activeIndex={outfitActiveIndex}
+            onDotClick={setOutfitActiveIndex}
+          />
+        </div>
+      )}
+
       {/* Voice indicator (bottom-left, session only) */}
       {sessionActive && (
         <VoiceIndicator
@@ -396,5 +442,164 @@ function MirrorPage() {
         </div>
       )}
     </main>
+  );
+}
+
+/* ── Recommendation sub-components (from main) ── */
+
+function OutfitsView({
+  greeting,
+  styleAnalysis,
+  outfits,
+  activeIndex,
+  onDotClick,
+}: {
+  greeting: string;
+  styleAnalysis: string;
+  outfits: Outfit[];
+  activeIndex: number;
+  onDotClick: (i: number) => void;
+}) {
+  const outfit = outfits[activeIndex];
+  if (!outfit) return null;
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+        padding: 40,
+        boxSizing: "border-box",
+        color: "#fff",
+      }}
+    >
+      {/* Header */}
+      <div style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 22, fontWeight: 300, margin: 0 }}>{greeting}</p>
+        <p style={{ fontSize: 14, opacity: 0.6, marginTop: 6 }}>
+          {styleAnalysis}
+        </p>
+      </div>
+
+      {/* Outfit card */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 20,
+        }}
+      >
+        <p
+          style={{
+            fontSize: 20,
+            fontWeight: 600,
+            letterSpacing: 1,
+            margin: 0,
+          }}
+        >
+          {outfit.outfit_name}
+        </p>
+
+        {/* Items row */}
+        <div
+          style={{
+            display: "flex",
+            gap: 24,
+            justifyContent: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          {outfit.items.map((oi, idx) => (
+            <div
+              key={idx}
+              style={{
+                textAlign: "center",
+                width: 180,
+              }}
+            >
+              <div
+                style={{
+                  width: 180,
+                  height: 220,
+                  background: "#1a1a1a",
+                  borderRadius: 8,
+                  overflow: "hidden",
+                  marginBottom: 8,
+                }}
+              >
+                <img
+                  src={oi.item.image_url}
+                  alt={oi.item.title}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                />
+              </div>
+              <p
+                style={{
+                  fontSize: 13,
+                  margin: 0,
+                  opacity: 0.9,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {oi.item.title}
+              </p>
+              <p style={{ fontSize: 13, margin: "4px 0 0", opacity: 0.6 }}>
+                {oi.item.price}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* Mira comment */}
+        <p
+          style={{
+            fontSize: 15,
+            fontStyle: "italic",
+            opacity: 0.7,
+            maxWidth: 600,
+            textAlign: "center",
+            margin: 0,
+          }}
+        >
+          &ldquo;{outfit.mira_comment}&rdquo;
+        </p>
+      </div>
+
+      {/* Navigation dots */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          gap: 10,
+          paddingTop: 20,
+          pointerEvents: "auto",
+        }}
+      >
+        {outfits.map((_, i) => (
+          <button
+            key={i}
+            onClick={() => onDotClick(i)}
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              border: "none",
+              background: i === activeIndex ? "#fff" : "rgba(255,255,255,0.3)",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          />
+        ))}
+      </div>
+    </div>
   );
 }

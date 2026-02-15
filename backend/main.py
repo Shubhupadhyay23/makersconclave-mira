@@ -1,19 +1,23 @@
 from uuid import UUID
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import socketio
 
 from routers import auth, queue, users, heygen
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
-from agent.orchestrator import MiraOrchestrator
+from agent.orchestrator import MiraOrchestrator, generate_outfit_recommendations, update_outfit_reaction
+from models.database import get_neon_client
+from models.schemas import OnboardingQuestionnaireResponse, OutfitReactionUpdate
+from services.user_data_service import save_onboarding_data
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 # Map socket IDs to user IDs for disconnect cleanup
 _sid_to_user: dict[str, str] = {}
 
+# Create FastAPI app
 app = FastAPI(title="Mirrorless API", version="0.1.0")
 
 # CORS on FastAPI only — Socket.io handles its own CORS via cors_allowed_origins
@@ -41,6 +45,81 @@ app.state.mira = mira
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# --- REST API endpoints for recommendations ---
+
+
+@app.post("/api/sessions/{session_id}/recommendations")
+async def create_outfit_recommendations(session_id: str):
+    """
+    Generate recommendations for active session.
+
+    1. Verify session exists and is active
+    2. Get user_id from session
+    3. Call generate_outfit_recommendations()
+    4. Handle new user case (return needs_onboarding)
+    5. Return results
+    """
+    db = await get_neon_client()
+
+    try:
+        # Get session info
+        print(f"[API] Recommendations requested for session: {session_id}")
+        session_query = "SELECT * FROM sessions WHERE id = $1::uuid AND status = 'active'"
+        session_rows = await db.execute(session_query, [session_id])
+
+        if not session_rows:
+            raise HTTPException(status_code=404, detail="Active session not found")
+
+        session = session_rows[0]
+        user_id = str(session["user_id"])
+
+        # Generate recommendations
+        result = await generate_outfit_recommendations(user_id, session_id, db)
+
+        return result
+
+    finally:
+        await db.close()
+
+
+@app.patch("/api/outfits/{outfit_id}/reaction")
+async def update_outfit_reaction_endpoint(
+    outfit_id: str, body: OutfitReactionUpdate
+):
+    """
+    Record user reaction (liked/disliked/skipped).
+    """
+    db = await get_neon_client()
+
+    try:
+        result = await update_outfit_reaction(db, outfit_id, body.reaction)
+        return result
+
+    finally:
+        await db.close()
+
+
+@app.post("/api/users/{user_id}/onboarding")
+async def complete_onboarding(
+    user_id: str, questionnaire: OnboardingQuestionnaireResponse
+):
+    """
+    Save onboarding questionnaire to style_profiles table.
+    Enables recommendations for new users without purchase history.
+    """
+    db = await get_neon_client()
+
+    try:
+        await save_onboarding_data(db, user_id, questionnaire.dict())
+        return {"status": "success", "message": "Onboarding completed"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save onboarding: {e}")
+
+    finally:
+        await db.close()
 
 
 # --- Socket.io events ---
@@ -136,6 +215,45 @@ async def end_session(sid, data):
     result = await mira.end_session(user_id)
     if result:
         await sio.emit("session_recap", result, room=user_id)
+
+
+@sio.event
+async def session_started(sid, data):
+    """
+    Auto-trigger recommendation generation when session starts via Socket.io.
+
+    Expected data: {
+        "session_id": "uuid",
+        "user_id": "uuid"
+    }
+    """
+    session_id = data.get("session_id")
+    user_id = data.get("user_id")
+
+    if not session_id or not user_id:
+        await sio.emit("error", {"message": "Missing session_id or user_id"}, room=sid)
+        return
+
+    # Emit start event
+    await sio.emit("outfit_generation_started", {"session_id": session_id}, room=sid)
+
+    # Generate recommendations
+    db = await get_neon_client()
+    try:
+        result = await generate_outfit_recommendations(user_id, session_id, db)
+
+        # Emit results
+        await sio.emit("outfits_ready", result, room=sid)
+
+    except Exception as e:
+        await sio.emit(
+            "error",
+            {"message": f"Failed to generate recommendations: {str(e)}"},
+            room=sid,
+        )
+
+    finally:
+        await db.close()
 
 
 # Wrap FastAPI with Socket.io — no outer CORS wrapper needed

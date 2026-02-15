@@ -1,7 +1,7 @@
 """Pydantic models for API request/response validation."""
 
 from datetime import date, datetime
-from typing import Optional
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr
@@ -24,18 +24,18 @@ class UserResponse(BaseModel):
 
 
 class StyleProfileUpdate(BaseModel):
-    brands: list[str] = []
-    price_range: Optional[dict] = None
-    style_tags: list[str] = []
-    size_info: Optional[dict] = None
+    brands: List[str] = []
+    price_range: Optional[Dict] = None
+    style_tags: List[str] = []
+    size_info: Optional[Dict] = None
     narrative_summary: Optional[str] = None
 
 
 class StyleProfileResponse(BaseModel):
     user_id: UUID
-    brands: list[str]
+    brands: List[str]
     price_range: Optional[dict]
-    style_tags: list[str]
+    style_tags: List[str]
     size_info: Optional[dict]
     narrative_summary: Optional[str]
 
@@ -92,9 +92,9 @@ class ClothingItemResponse(BaseModel):
 class SessionOutfitResponse(BaseModel):
     id: UUID
     session_id: UUID
-    outfit_data: dict
+    outfit_data: Dict
     reaction: Optional[str]
-    clothing_items: list[UUID]
+    clothing_items: List[UUID]
 
 
 class QueueEntry(BaseModel):
@@ -103,3 +103,16 @@ class QueueEntry(BaseModel):
     position: int
     status: str
     joined_at: datetime
+
+
+class OnboardingQuestionnaireResponse(BaseModel):
+    favorite_brands: List[str] = []
+    style_preferences: List[str] = []
+    price_range: Dict = {"min": 0, "max": 500}
+    size_info: Dict = {}
+    gender: str = "unspecified"
+    occasions: List[str] = []
+
+
+class OutfitReactionUpdate(BaseModel):
+    reaction: str  # "liked", "disliked", or "skipped"

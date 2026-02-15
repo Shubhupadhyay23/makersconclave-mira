@@ -5,11 +5,27 @@ Supports two modes:
 - Neon serverless HTTP: Used when port 5432 is blocked (local dev)
 """
 
+import json
 import os
 from contextlib import asynccontextmanager
+from datetime import date, datetime
+from decimal import Decimal
 from urllib.parse import urlparse
 
 import httpx
+
+
+class _ParamEncoder(json.JSONEncoder):
+    """JSON encoder that handles date, datetime, and Decimal types for Neon HTTP API."""
+
+    def default(self, o):
+        if isinstance(o, (date, datetime)):
+            return o.isoformat()
+        if isinstance(o, Decimal):
+            return float(o)
+        return super().default(o)
+
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,17 +42,24 @@ def _get_neon_http_url() -> str:
 class NeonHTTPClient:
     """Thin wrapper around Neon's serverless HTTP SQL API."""
 
-    def __init__(self, connection_string: str | None = None):
+    def __init__(self, connection_string=None):
         self.connection_string = connection_string or DATABASE_URL
         parsed = urlparse(self.connection_string)
         self.api_url = f"https://{parsed.hostname}/sql"
-        self._client = httpx.AsyncClient(timeout=30)
+        # Disable keepalive to avoid event-loop binding issues with connection reuse
+        self._client = httpx.AsyncClient(
+            timeout=30,
+            limits=httpx.Limits(max_keepalive_connections=0),
+        )
 
-    async def execute(self, query: str, params: list | None = None) -> list[dict]:
+    async def execute(self, query: str, params=None):
         """Execute a SQL query and return rows as dicts."""
+        payload = json.dumps(
+            {"query": query, "params": params or []}, cls=_ParamEncoder
+        )
         resp = await self._client.post(
             self.api_url,
-            json={"query": query, "params": params or []},
+            content=payload,
             headers={
                 "Content-Type": "application/json",
                 "Neon-Connection-String": self.connection_string,
@@ -46,7 +69,7 @@ class NeonHTTPClient:
         data = resp.json()
         return data.get("rows", [])
 
-    async def fetchval(self, query: str, params: list | None = None):
+    async def fetchval(self, query: str, params=None):
         """Execute a query and return the first column of the first row."""
         rows = await self.execute(query, params)
         if rows:

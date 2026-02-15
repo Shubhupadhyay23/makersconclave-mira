@@ -1,7 +1,10 @@
 """Tool definitions for Mira agent — Claude tool_use format."""
 
+import asyncio
 import os
 import re
+from collections import defaultdict
+from typing import Dict, List
 
 import httpx
 from dotenv import load_dotenv
@@ -9,12 +12,31 @@ from dotenv import load_dotenv
 from models.database import NeonHTTPClient
 from scraper.gmail_auth import build_gmail_service
 from scraper.gmail_fetch import search_emails, get_message_content
+from services.serper_cache import serper_cache
+from services.serper_search import build_brand_queries, fetch_clothing_batch
+from services.user_data_service import is_clothing_brand
 
 load_dotenv()
 
 SERPER_SHOPPING_URL = "https://google.serper.dev/shopping"
 
-# Claude tool definitions
+# Popular brands used as fallback when user has no brand history
+POPULAR_BRANDS = [
+    "Nike", "Adidas", "Zara", "H&M", "Uniqlo",
+    "Levi's", "Ralph Lauren", "Calvin Klein", "Tommy Hilfiger",
+    "Gap", "Banana Republic", "J.Crew", "Abercrombie & Fitch",
+    "Patagonia", "The North Face", "Lululemon", "New Balance",
+    "Puma", "Mango", "COS", "Everlane", "Carhartt",
+    "Champion", "Stussy", "Supreme", "Off-White",
+    "Balenciaga", "Gucci", "Burberry", "Lacoste",
+    "Hugo Boss", "Ted Baker", "AllSaints", "Theory",
+    "Arc'teryx", "Columbia", "Under Armour", "Reebok",
+    "Converse", "Vans", "ASOS", "Topman",
+    "Massimo Dutti", "Brooks Brothers", "Bonobos", "Nordstrom",
+    "Scotch & Soda", "G-Star Raw", "Diesel", "Kith",
+]
+
+# Claude tool definitions for event-driven mirror sessions
 TOOL_DEFINITIONS = [
     {
         "name": "search_clothing",
@@ -183,13 +205,122 @@ TOOL_DEFINITIONS = [
             "required": ["items"],
         },
     },
+    {
+        "name": "give_recommendation",
+        "description": (
+            "Search for clothing items from specific brands to build outfit recommendations. "
+            "Call this tool when you're ready to find tops and bottoms to recommend. "
+            "Returns a categorized list of available clothing items (tops and bottoms) from the "
+            "requested brands, with brand diversity ensured. After getting results, use "
+            "present_items to show your curated picks to the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "brands": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of 3-7 clothing brand names to search for. "
+                        "Mix the user's favorite brands with popular brands for variety."
+                    ),
+                },
+                "gender": {
+                    "type": "string",
+                    "enum": ["mens", "womens", "unisex"],
+                    "description": "Gender category for clothing search.",
+                },
+                "style_notes": {
+                    "type": "string",
+                    "description": (
+                        "Brief notes about the user's style to guide search "
+                        "(e.g. 'casual streetwear', 'business casual', 'athleisure')."
+                    ),
+                },
+            },
+            "required": ["brands", "gender"],
+        },
+    },
 ]
+
+# Standalone reference to the give_recommendation tool schema
+GIVE_RECOMMENDATION_TOOL = {
+    "name": "give_recommendation",
+    "description": (
+        "Search for clothing items from specific brands to build outfit recommendations. "
+        "Call this tool when you're ready to find tops and bottoms to recommend. "
+        "Returns a list of available clothing items (tops and bottoms) from the requested brands."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "brands": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "List of 3-7 clothing brand names to search for. "
+                    "Mix the user's favorite brands with popular brands for variety."
+                ),
+            },
+            "gender": {
+                "type": "string",
+                "enum": ["mens", "womens", "unisex"],
+                "description": "Gender category for clothing search.",
+            },
+            "style_notes": {
+                "type": "string",
+                "description": (
+                    "Brief notes about the user's style to guide search "
+                    "(e.g. 'casual streetwear', 'business casual', 'athleisure')."
+                ),
+            },
+        },
+        "required": ["brands", "gender"],
+    },
+}
 
 
 def _parse_price(price_str: str) -> float | None:
     """Extract numeric price from string like '$595.00'."""
     match = re.search(r"[\d,]+\.?\d*", price_str.replace(",", ""))
     return float(match.group()) if match else None
+
+
+def _extract_brand(item: dict) -> str:
+    """Extract the actual clothing brand from item title or query_brand tag."""
+    if item.get("query_brand"):
+        return item["query_brand"]
+    title = item.get("title", "").lower()
+    for brand in POPULAR_BRANDS:
+        if brand.lower() in title:
+            return brand
+    return item.get("source", "Unknown")
+
+
+def _select_diverse_items(items: list, limit: int) -> list:
+    """Select items balanced across actual clothing brands using round-robin."""
+    by_brand = defaultdict(list)
+    for item in items:
+        by_brand[_extract_brand(item)].append(item)
+
+    selected = []
+    brand_lists = list(by_brand.values())
+    idx = 0
+    while len(selected) < limit and brand_lists:
+        brand_items = brand_lists[idx % len(brand_lists)]
+        if brand_items:
+            selected.append(brand_items.pop(0))
+        else:
+            brand_lists.pop(idx % len(brand_lists))
+            if not brand_lists:
+                break
+            continue
+        idx += 1
+
+    return selected
+
+
+# --- Event-driven mirror session tool execution ---
 
 
 async def execute_tool(tool_name: str, tool_input: dict, user_context: dict) -> dict:
@@ -213,6 +344,11 @@ async def execute_tool(tool_name: str, tool_input: dict, user_context: dict) -> 
         return await _search_purchases(tool_input, user_context)
     elif tool_name == "search_calendar":
         return await _search_calendar(tool_input, user_context)
+    elif tool_name == "give_recommendation":
+        # Use session_id from user_context for caching; fall back to user_id
+        session_id = user_context.get("session_id", user_context.get("user_id", "default"))
+        result_text = await execute_give_recommendation(tool_input, session_id)
+        return {"results": result_text}
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -504,3 +640,112 @@ async def _search_calendar(tool_input: dict, user_context: dict) -> dict:
     except Exception as e:
         print(f"[mira-tools] search_calendar: failed — {e}")
         return {"error": f"Calendar search failed: {str(e)}", "results": []}
+
+
+# --- Recommendation pipeline tool execution ---
+
+
+async def execute_give_recommendation(
+    tool_input: Dict, session_id: str
+) -> str:
+    """
+    Execute the give_recommendation tool.
+
+    Searches Serper for clothing items from the specified brands,
+    tags them as tops/bottoms, caches results, and returns formatted list.
+    """
+    brands = tool_input.get("brands", [])
+    gender = tool_input.get("gender", "mens")
+
+    # Filter to known clothing brands + fill with popular brands
+    valid_brands = [b for b in brands if is_clothing_brand(b)]
+    if not valid_brands:
+        valid_brands = brands[:3]  # Use whatever Claude provided
+
+    # Fill remaining slots with popular brands
+    seen = {b.lower() for b in valid_brands}
+    for b in POPULAR_BRANDS:
+        if len(valid_brands) >= 7:
+            break
+        if b.lower() not in seen:
+            valid_brands.append(b)
+            seen.add(b.lower())
+
+    # Check cache first
+    cached = serper_cache.get(session_id)
+    if cached:
+        return _format_clothing_for_claude(cached)
+
+    # Build and execute queries
+    brand_queries = build_brand_queries(valid_brands[:5], gender)
+
+    serper_api_key = os.getenv("SERPER_API_KEY")
+    if not serper_api_key:
+        return "Error: Serper API key not configured. Cannot search for clothing."
+
+    # Fetch tops and bottoms in parallel
+    tops_items, bottoms_items = await asyncio.gather(
+        fetch_clothing_batch(
+            brand_queries["tops"], serper_api_key, num_results_per_query=3
+        ),
+        fetch_clothing_batch(
+            brand_queries["bottoms"], serper_api_key, num_results_per_query=3
+        ),
+    )
+
+    # Tag items with category
+    for item in tops_items:
+        item["clothing_category"] = "top"
+    for item in bottoms_items:
+        item["clothing_category"] = "bottom"
+
+    all_items = tops_items + bottoms_items
+
+    # Cache results for session
+    serper_cache.set(session_id, all_items)
+
+    if not all_items:
+        return "No clothing items found. Try different brands or check back later."
+
+    # Select diverse subset
+    limited_tops = _select_diverse_items(
+        [i for i in all_items if i.get("clothing_category") == "top"], 25
+    )
+    limited_bottoms = _select_diverse_items(
+        [i for i in all_items if i.get("clothing_category") == "bottom"], 25
+    )
+
+    return _format_clothing_for_claude(limited_tops + limited_bottoms)
+
+
+def _format_clothing_for_claude(items: List[Dict]) -> str:
+    """Format clothing items into a readable string for Claude."""
+    tops = [i for i in items if i.get("clothing_category") == "top"]
+    bottoms = [i for i in items if i.get("clothing_category") == "bottom"]
+
+    def _format_section(section_items: List[Dict]) -> str:
+        text = ""
+        for item in section_items:
+            text += (
+                f"- **{item['title']}**\n"
+                f"  - Brand/Seller: {item['source']}\n"
+                f"  - Price: {item['price']}\n"
+                f"  - Rating: {item.get('rating', 'N/A')}\n"
+                f"  - Link: {item['link']}\n"
+                f"  - Image: {item['image_url']}\n"
+                f"  - Product ID: {item['product_id']}\n"
+            )
+        return text
+
+    result = f"Found {len(items)} clothing items:\n\n"
+    result += "IMPORTANT: Pick tops ONLY from the TOPS section and bottoms ONLY from the BOTTOMS section.\n\n"
+
+    if tops:
+        result += f"### TOPS ({len(tops)} items) — use these for the \"top\" slot:\n"
+        result += _format_section(tops)
+
+    if bottoms:
+        result += f"\n### BOTTOMS ({len(bottoms)} items) — use these for the \"bottom\" slot:\n"
+        result += _format_section(bottoms)
+
+    return result

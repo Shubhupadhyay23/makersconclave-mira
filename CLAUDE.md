@@ -4,118 +4,128 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mirrorless is an AI-powered smart mirror (hackathon project). Users onboard via phone (Google OAuth), their purchase history is scraped from Gmail, and AI stylist "Mira" gives personalized outfit recommendations overlaid on their body in real-time via a two-way mirror display. Full spec in `SPEC.md`.
-
-## Build & Run Commands
-
-### Frontend (Next.js 15 + React 19 + TypeScript)
-
-```bash
-cd frontend
-npm install
-npm run dev          # Dev server on :3000
-npm run build        # Production build (also type-checks)
-npm run lint         # ESLint
-npm run test         # Vitest (single run)
-npm run test:watch   # Vitest (watch mode)
-```
-
-### Backend (Python 3.11+ / FastAPI)
-
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload        # Dev server on :8000
-pytest                           # All tests
-pytest tests/test_auth.py -v     # Single test file
-pytest tests/test_auth.py::test_upsert_creates_new_user  # Single test
-```
-
-### Deploy
-
-```bash
-vercel --prod          # Frontend to Vercel
-# Backend deploys via Render dashboard
-```
+Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth), their purchase history is scraped from Gmail, and AI stylist "Mira" gives personalized outfit recommendations overlaid on their body in real-time via a two-way mirror display.
 
 ## Architecture
 
-- **Frontend (Next.js on Vercel)**: Two apps in one — mirror display (full-screen Chrome on TV) and phone UI (onboarding + dashboard)
-- **Backend (FastAPI on Render)**: Agent orchestrator, Gmail scraping, Serper shopping API, MCP server
-- **Database**: Neon Postgres (7 tables, cascade deletes on user). Schema in `backend/migrations/001_initial_schema.sql`
+- **Frontend (Next.js)**: Mirror display (full-screen Chrome on TV), phone UI (onboarding + dashboard), deployed on Vercel
+- **Backend (Python FastAPI)**: Agent orchestrator, Gmail scraping, Serper.dev integration, MCP server, deployed on Render
+- **Database**: Neon Postgres
 - **Real-time**: Socket.io connecting mirror display, phone, and backend
-
-### Data flow
-
-```
-Phone → POST /auth/google → Backend exchanges code with Google → upserts user in Neon
-Phone → POST /queue/join → Backend assigns position → Phone polls GET /queue/status every 5s
-Mirror → MediaPipe (pose+gestures) → Socket.io → Backend → Claude API → Socket.io → Mirror overlay
-```
-
-### Database access pattern
-
-Backend uses `NeonHTTPClient` (in `models/database.py`) — a thin wrapper around Neon's serverless HTTP API on port 443. Each endpoint creates a client, uses it, closes it. Production alternative: asyncpg pool (port 5432 + SSL). All queries use `$1, $2` parameterized placeholders.
 
 ## Key Technical Decisions
 
-- **AI Agent**: Custom event-driven orchestrator in `backend/agent/orchestrator.py` calling Claude API directly (NOT Claude Agents SDK). Split-model routing: Sonnet 4.5 (400 max_tokens) for conversational turns, Haiku 4.5 (1024 max_tokens) for tool-result processing. All calls use OAuth token auth (`ANTHROPIC_AUTH_TOKEN` + `anthropic-beta: oauth-2025-04-20` header). Three-layer loop protection: tool-depth circuit breaker (max 3 rounds), `is_error` on failed tool results, global API call limit (20/session).
-- **Google OAuth**: Authorization code flow via `google.accounts.oauth2.initCodeClient` with `"postmessage"` redirect URI. Scopes include `gmail.readonly` and `calendar.readonly` for scraping.
-- **No JWT/sessions**: `user_id` (UUID) is the session identifier, stored in React state.
-- **Gesture detection**: MediaPipe Hands in browser → `gesture-classifier.ts` (swipe detection via 5-point wrist tracking window, 800ms cooldown, 0.6 confidence threshold)
-- **Clothing data**: Serper.dev Shopping API (`POST https://google.serper.dev/shopping`)
-- **Voice pipeline**: Deepgram streaming STT (input) → HeyGen LiveAvatar API (output)
-- **Frontend styling**: Inline styles (no CSS framework)
+- **AI Agent**: Custom event-driven orchestrator calling Claude API directly (NOT Claude Agents SDK). Events (voice, gestures, pose) are batched and sent to Claude.
+- **Claude Model**: Haiku 4.5 via Anthropic API with OAuth setup token + beta headers
+- **Voice**: Deepgram streaming STT (input) → HeyGen LiveAvatar API (output, planned)
+- **Body tracking**: MediaPipe BlazePose (pose) + MediaPipe Hands (gestures) in browser
+- **Clothing overlay**: 2D affine transforms based on pose landmarks. Fallback: side-by-side display
+- **Clothing data**: Serper.dev Google Shopping API (not SerpAPI)
+- **Scraping strategy**: Fast parallel pass (~15s) for immediate agent context, background deep scrape async
+- **Database connection**: Dual-mode setup - asyncpg pool (production on Render) or Neon serverless HTTP (local dev when port 5432 blocked)
 
-## API Endpoints (Backend)
+## Build & Run Commands
 
-| Method | Path                      | Purpose                                  |
-| ------ | ------------------------- | ---------------------------------------- |
-| POST   | `/auth/google`            | Exchange Google OAuth code → upsert user |
-| POST   | `/auth/profile`           | Update user name + phone                 |
-| POST   | `/queue/join`             | Idempotent queue join, returns position  |
-| GET    | `/queue/status/{user_id}` | Poll queue position + total_ahead        |
-| GET    | `/users/{user_id}`        | Fetch user profile                       |
-| GET    | `/health`                 | Health check                             |
+### Frontend (Next.js)
+```
+cd frontend
+npm install
+npm run dev        # Development server
+npm run build      # Production build
+npm run lint       # ESLint
+```
+
+### Backend (Python FastAPI)
+```
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload              # Development server
+pytest                                 # Run all tests (must run from backend/)
+pytest tests/test_database.py         # Single test file
+python services/serper_search.py "mens jacket"  # CLI tool for testing Serper API
+```
+
+### Deploy
+```
+vercel --prod                           # Frontend to Vercel
+# Backend deploys via Render dashboard or render.yaml
+```
+
+## Project Structure
+
+```
+frontend/           # Next.js app (mirror display + phone UI)
+  src/
+    app/
+      mirror/       # Full-screen mirror display page
+      phone/        # Phone onboarding + dashboard
+    lib/            # Shared utilities, Socket.io client
+backend/            # Python FastAPI
+  main.py           # FastAPI app entry
+  agent/            # Mira orchestrator, Claude API integration
+    orchestrator.py # Event-driven agent orchestrator
+    prompts.py      # Mira's personality prompt
+  scraper/          # Gmail scraping, data extraction
+  mcp/              # MCP server for Poke integration
+  models/           # Pydantic models, DB schemas
+    database.py     # Dual-mode DB connection (asyncpg + Neon HTTP)
+    schemas.py      # Pydantic request/response models
+  services/         # Serper.dev, Deepgram integrations
+    serper_search.py  # Serper.dev Shopping API (CLI + library)
+  migrations/       # Raw SQL migration files
+    001_initial_schema.sql
+  tests/            # Pytest test suite
+```
 
 ## Environment Variables
 
-### Frontend `.env.local`
-
-- `NEXT_PUBLIC_API_URL` — Backend REST URL (e.g. `http://localhost:8000`)
+### Frontend (.env.local)
 - `NEXT_PUBLIC_SOCKET_URL` — Backend WebSocket URL
 - `NEXT_PUBLIC_GOOGLE_CLIENT_ID` — Google OAuth client ID
 
-### Backend `.env`
+### Backend (.env)
+- `DATABASE_URL` — Neon Postgres connection string (required)
+- `SERPER_API_KEY` — Serper.dev API key (required, see .env.example)
+- `ANTHROPIC_API_KEY` — Claude API key (required)
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth (planned)
+- `DEEPGRAM_API_KEY` — Deepgram STT key (planned)
+- `HEYGEN_API_KEY` — HeyGen avatar API key (planned)
 
-- `DATABASE_URL` — Neon Postgres connection string
-- `ANTHROPIC_API_KEY` — Claude API key (for future non-Haiku models)
-- `ANTHROPIC_AUTH_TOKEN` — OAuth token for Haiku calls (via `claude setup-token`)
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth
-- `SERPER_API_KEY` — Serper.dev shopping API key
-- `DEEPGRAM_API_KEY` — Deepgram STT key
-- `HEYGEN_API_KEY` — HeyGen avatar API key
+## Database Setup
 
-### Agent Architecture (Mira)
+The database uses Neon Postgres with a dual-mode connection strategy:
+- **Production (Render)**: asyncpg connection pool via standard PostgreSQL port 5432
+- **Local dev**: Neon serverless HTTP API when port 5432 is blocked (firewall/VPN)
 
-The Mira agent lives in `backend/agent/` with four key files:
+### Running Migrations
+Migrations are raw SQL files in `backend/migrations/`. Run them manually using:
+```bash
+psql $DATABASE_URL -f backend/migrations/001_initial_schema.sql
+```
 
-- **`orchestrator.py`** — Event-driven loop: receives events → builds messages → calls Claude → streams speech → handles tools. Split-model routing: Sonnet 4.5 for speech (quality), Haiku 4.5 for tool processing (speed, 1024 max_tokens). Auto-snapshot emitted at session start. Loop protection: tool-call depth limit of 3 rounds, `is_error` flag on failed tool results, and `SOFT_API_LIMIT` of 20 calls per session.
-- **`prompts.py`** — Personality, scripted opener (Turn 1: purchase roast, Turn 2: outfit check, Turn 3+: freeform), and tool usage docs. `build_system_prompt()` injects user data.
-- **`tools.py`** — Four tools: `search_clothing` (Serper API, results go to Claude ONLY), `present_items` (curated picks → frontend via Socket.io), `search_purchases` (DB query), `search_gmail` (Gmail API).
-- **`memory.py`** — Load/save user profiles, purchases, session summaries from Neon.
+Or use the Neon SQL Editor in the dashboard.
 
-**Two-step recommendation flow**: `search_clothing` (12 results → Claude only) → Claude picks best 1-5 → `present_items` (curated picks → mirror display). This prevents search flooding.
+## Current Implementation Status
 
-**CLI test harness**: `cd backend && python -m agent.test_harness --mock` for fast iteration without frontend. Supports gesture shortcuts (`/like`, `/dislike`, `/left`, `/right`) and scripted sessions (`--script FILE`).
+**Completed**:
+- Database schema and Neon Postgres integration
+- Serper.dev Shopping API integration with CLI tool
+- Basic FastAPI backend structure
+- Next.js frontend scaffolding with mirror/phone page structure
+- MediaPipe integration for body/hand tracking
+
+**In Progress / Planned**:
+- Gmail OAuth and scraping pipeline
+- Mira agent orchestrator (event-driven Claude API calls)
+- Socket.io real-time communication
+- Clothing overlay rendering
+- HeyGen voice avatar integration
+- MCP server for Poke integration
 
 ## Conventions
 
-- Frontend: TypeScript strict mode, path alias `@/*` → `./src/*`
-- Backend: Python 3.11+, Pydantic models in `models/schemas.py`
-- Socket.io events: snake_case (`gesture_detected`, `outfit_changed`, `session_started`)
-- All Claude API calls go through `backend/agent/orchestrator.py` — never from frontend
+- Frontend uses TypeScript, backend uses Python 3.11+
+- Socket.io events use snake_case: `outfit_changed`, `gesture_detected`, `session_started`
+- All Claude API calls go through `backend/agent/orchestrator.py` — never call Claude directly from frontend
 - Mira's personality prompt lives in `backend/agent/prompts.py`
-- Database migrations: raw SQL in `backend/migrations/`
-- Tests run against live Neon (no mocks) — test fixtures create and delete their own data
-- Frontend tests use Vitest + jsdom + @testing-library/react
+- Database migrations via raw SQL files in `backend/migrations/`
