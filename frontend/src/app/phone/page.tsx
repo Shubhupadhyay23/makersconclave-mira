@@ -1,207 +1,243 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { socket } from "@/lib/socket";
-import { fetchRecommendations, submitReaction, submitOnboarding } from "@/lib/api";
-import type { Outfit, OnboardingData, RecommendationResponse } from "@/lib/types";
+import {
+  getUser,
+  updateProfile,
+  uploadSelfie,
+  startScrape,
+  submitOnboarding,
+  UserProfile,
+} from "@/lib/api";
+import type { OnboardingData } from "@/lib/types";
+import GoogleSignIn from "@/components/phone/GoogleSignIn";
+import SelfieCapture from "@/components/phone/SelfieCapture";
+import QueueStatus from "@/components/phone/QueueStatus";
 
-// MVP hardcoded IDs — replace with Google OAuth later
-const USER_ID = "00000000-0000-0000-0000-000000000001";
-const SESSION_ID = "00000000-0000-0000-0000-000000000001";
+type PhoneState = "loading" | "signin" | "questionnaire" | "queue" | "idle" | "recap";
 
-type PhoneState = "welcome" | "onboarding" | "loading" | "outfits" | "done";
+const STORAGE_KEY = "mirrorless_user_id";
 
 export default function PhonePage() {
-  const [state, setState] = useState<PhoneState>("welcome");
-  const [outfits, setOutfits] = useState<Outfit[]>([]);
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [liked, setLiked] = useState(0);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [greeting, setGreeting] = useState("");
+  const [state, setState] = useState<PhoneState>("loading");
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [error, setError] = useState("");
+  const [recapData, setRecapData] = useState<{
+    summary?: string;
+    items_shown?: number;
+    items_liked?: number;
+  }>({});
 
-  async function startSession() {
-    setState("loading");
+  // Check for returning user on mount
+  useEffect(() => {
+    async function checkReturning() {
+      const savedId = localStorage.getItem(STORAGE_KEY);
+      if (savedId) {
+        try {
+          const existingUser = await getUser(savedId);
+          setUser(existingUser);
+          setState("queue");
+          return;
+        } catch {
+          localStorage.removeItem(STORAGE_KEY);
+        }
+      }
+      setState("signin");
+    }
+    checkReturning();
+  }, []);
+
+  // Connect socket when we have a user
+  useEffect(() => {
+    if (!user) return;
     socket.connect();
-    socket.emit("session_started", {
-      session_id: SESSION_ID,
-      user_id: USER_ID,
-    });
+    socket.emit("join_room", { user_id: user.id });
 
-    // Also call REST endpoint directly
-    try {
-      const result = await fetchRecommendations(SESSION_ID);
-      handleResult(result);
-    } catch {
-      setErrorMsg("Could not reach backend.");
-      setState("welcome");
-    }
-  }
+    const handleSessionEnded = (data: {
+      summary?: string;
+      items_shown?: number;
+      items_liked?: number;
+    }) => {
+      setRecapData(data || {});
+      setState("recap");
+    };
 
-  function handleResult(result: RecommendationResponse) {
-    if (result.status === "success" && result.data) {
-      setGreeting(result.data.greeting);
-      setOutfits(result.data.outfits);
-      setCurrentIdx(0);
-      setLiked(0);
-      setState("outfits");
-    } else if (result.status === "needs_onboarding") {
-      setState("onboarding");
-    } else {
-      setErrorMsg(result.message ?? "Something went wrong.");
-      setState("welcome");
-    }
-  }
+    socket.on("session_ended", handleSessionEnded);
 
-  async function handleOnboardingSubmit(data: OnboardingData) {
-    setState("loading");
-    await submitOnboarding(USER_ID, data);
-    try {
-      const result = await fetchRecommendations(SESSION_ID);
-      handleResult(result);
-    } catch {
-      setErrorMsg("Could not reach backend.");
-      setState("welcome");
-    }
-  }
+    return () => {
+      socket.off("session_ended", handleSessionEnded);
+    };
+  }, [user]);
 
-  async function handleReaction(reaction: "liked" | "disliked" | "skipped") {
-    if (reaction === "liked") setLiked((n) => n + 1);
+  const handleSignInComplete = useCallback(
+    (profile: UserProfile, selfieBase64: string | null, displayName: string) => {
+      setUser(profile);
+      localStorage.setItem(STORAGE_KEY, profile.id);
 
-    // Fire-and-forget reaction update
-    const outfitId = outfits[currentIdx]?.id;
-    if (outfitId) {
-      submitReaction(outfitId, reaction).catch(() => {});
-    }
+      // Fire-and-forget: update name, upload selfie, start scrape
+      updateProfile(profile.id, displayName).catch(() => {});
+      if (selfieBase64) {
+        uploadSelfie(profile.id, selfieBase64).catch(() => {});
+      }
+      startScrape(profile.id).catch(() => {});
 
-    if (currentIdx + 1 < outfits.length) {
-      setCurrentIdx((i) => i + 1);
-    } else {
-      setState("done");
-    }
+      setState("questionnaire");
+    },
+    []
+  );
+
+  const handleQuestionnaireSubmit = useCallback(
+    async (data: OnboardingData) => {
+      if (!user) return;
+      await submitOnboarding(user.id, data);
+      setState("queue");
+    },
+    [user]
+  );
+
+  const handleBecameActive = useCallback(() => {
+    setState("idle");
+  }, []);
+
+  const handleLeaveQueue = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    setUser(null);
+    setState("signin");
+  }, []);
+
+  const handleDone = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    setUser(null);
+    setRecapData({});
+    setState("signin");
+  }, []);
+
+  if (state === "loading") {
+    return (
+      <main className="min-h-screen bg-white flex items-center justify-center">
+        <p className="text-zinc-400 animate-pulse">Loading...</p>
+      </main>
+    );
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        fontFamily: "'Helvetica Neue', Arial, sans-serif",
-        background: "#fafafa",
-        color: "#111",
-      }}
-    >
-      {state === "welcome" && (
-        <WelcomeView onStart={startSession} error={errorMsg} />
+    <main className="min-h-screen bg-white text-zinc-900">
+      {state === "signin" && (
+        <SignInView onComplete={handleSignInComplete} error={error} setError={setError} />
       )}
-      {state === "onboarding" && (
-        <OnboardingView onSubmit={handleOnboardingSubmit} />
+      {state === "questionnaire" && (
+        <QuestionnaireView onSubmit={handleQuestionnaireSubmit} />
       )}
-      {state === "loading" && <PhoneLoadingView />}
-      {state === "outfits" && outfits[currentIdx] && (
-        <OutfitCardView
-          outfit={outfits[currentIdx]}
-          index={currentIdx}
-          total={outfits.length}
-          greeting={greeting}
-          onReaction={handleReaction}
-        />
+      {state === "queue" && user && (
+        <div className="flex flex-col items-center justify-center min-h-screen p-8">
+          <QueueStatus userId={user.id} onBecameActive={handleBecameActive} onLeave={handleLeaveQueue} />
+        </div>
       )}
-      {state === "done" && (
-        <DoneView liked={liked} total={outfits.length} onRestart={() => setState("welcome")} />
+      {state === "idle" && <IdleView />}
+      {state === "recap" && (
+        <RecapView data={recapData} onDone={handleDone} />
       )}
     </main>
   );
 }
 
-/* ---------- Sub-views ---------- */
+/* ---------- SignIn View ---------- */
 
-function WelcomeView({ onStart, error }: { onStart: () => void; error: string }) {
+function SignInView({
+  onComplete,
+  error,
+  setError,
+}: {
+  onComplete: (user: UserProfile, selfie: string | null, name: string) => void;
+  error: string;
+  setError: (e: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [selfie, setSelfie] = useState<string | null>(null);
+  const [oauthUser, setOauthUser] = useState<UserProfile | null>(null);
+
+  const handleGoogleSuccess = useCallback(
+    (user: UserProfile) => {
+      setOauthUser(user);
+      if (!name && user.name) setName(user.name);
+    },
+    [name]
+  );
+
+  const handleContinue = useCallback(() => {
+    if (!oauthUser) {
+      setError("Please sign in with Google first.");
+      return;
+    }
+    if (!name.trim()) {
+      setError("Please enter your name.");
+      return;
+    }
+    onComplete(oauthUser, selfie, name.trim());
+  }, [oauthUser, selfie, name, onComplete, setError]);
+
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        padding: 32,
-        textAlign: "center",
-      }}
-    >
-      <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>
-        Mirrorless
-      </h1>
-      <p style={{ fontSize: 16, color: "#666", marginBottom: 32 }}>
-        Your AI stylist, powered by Mira
-      </p>
-      <button
-        onClick={onStart}
-        style={{
-          background: "#111",
-          color: "#fff",
-          border: "none",
-          borderRadius: 12,
-          padding: "14px 40px",
-          fontSize: 16,
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        Start Session
-      </button>
-      {error && (
-        <p style={{ color: "#c00", marginTop: 16, fontSize: 14 }}>{error}</p>
+    <div className="flex flex-col items-center justify-center min-h-screen p-8 gap-8">
+      <div className="text-center">
+        <h1 className="text-3xl font-bold mb-2">Mirrorless</h1>
+        <p className="text-zinc-500">Your AI stylist awaits</p>
+      </div>
+
+      <SelfieCapture onCapture={setSelfie} />
+
+      <div className="w-full max-w-sm">
+        <label className="block text-sm font-semibold mb-1.5">Your name</label>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Enter your name"
+          className="w-full px-4 py-3 border border-zinc-200 rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-zinc-900"
+        />
+      </div>
+
+      {!oauthUser ? (
+        <GoogleSignIn
+          onSuccess={handleGoogleSuccess}
+          onError={setError}
+        />
+      ) : (
+        <div className="flex items-center gap-2 text-sm text-green-600">
+          <span>✓</span>
+          <span>Signed in as {oauthUser.email}</span>
+        </div>
       )}
+
+      {oauthUser && (
+        <button
+          onClick={handleContinue}
+          className="w-full max-w-sm bg-zinc-900 text-white rounded-xl py-4 text-base font-semibold"
+        >
+          Continue
+        </button>
+      )}
+
+      {error && <p className="text-red-500 text-sm text-center">{error}</p>}
     </div>
   );
 }
 
-function PhoneLoadingView() {
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        textAlign: "center",
-      }}
-    >
-      <p
-        style={{
-          fontSize: 20,
-          fontWeight: 500,
-          animation: "pulse 2s ease-in-out infinite",
-        }}
-      >
-        Mira is styling you...
-      </p>
-      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
-    </div>
-  );
-}
+/* ---------- Questionnaire View ---------- */
 
 const STYLE_OPTIONS = [
-  "Casual",
-  "Streetwear",
-  "Minimalist",
-  "Preppy",
-  "Athleisure",
-  "Vintage",
-  "Smart Casual",
-  "Bohemian",
+  "Casual", "Streetwear", "Minimalist", "Preppy",
+  "Athleisure", "Vintage", "Smart Casual", "Bohemian",
 ];
 
 const OCCASION_OPTIONS = [
-  "Everyday",
-  "Work",
-  "Date Night",
-  "Workout",
-  "Weekend",
-  "Travel",
+  "Everyday", "Work", "Date Night", "Workout", "Weekend", "Travel",
 ];
 
-function OnboardingView({ onSubmit }: { onSubmit: (d: OnboardingData) => void }) {
+function QuestionnaireView({
+  onSubmit,
+}: {
+  onSubmit: (data: OnboardingData) => void;
+}) {
   const [brands, setBrands] = useState("");
   const [styles, setStyles] = useState<string[]>([]);
   const [occasions, setOccasions] = useState<string[]>([]);
@@ -224,45 +260,19 @@ function OnboardingView({ onSubmit }: { onSubmit: (d: OnboardingData) => void })
     });
   }
 
-  const chipBase: React.CSSProperties = {
-    border: "1px solid #ccc",
-    borderRadius: 20,
-    padding: "8px 16px",
-    fontSize: 14,
-    cursor: "pointer",
-    background: "#fff",
-  };
-  const chipActive: React.CSSProperties = {
-    ...chipBase,
-    background: "#111",
-    color: "#fff",
-    borderColor: "#111",
-  };
-
   return (
-    <div style={{ padding: 24, maxWidth: 480, margin: "0 auto" }}>
-      <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
-        Let&apos;s get to know you
-      </h2>
-      <p style={{ color: "#666", marginBottom: 24, fontSize: 14 }}>
-        Mira needs a bit of info to style you perfectly.
+    <div className="p-6 max-w-lg mx-auto pb-20">
+      <h2 className="text-2xl font-bold mb-1">Let&apos;s get to know you</h2>
+      <p className="text-zinc-500 text-sm mb-6">
+        Quick style questions to personalize your experience.
       </p>
 
       {/* Gender */}
-      <label style={{ fontWeight: 600, fontSize: 14 }}>Gender</label>
+      <label className="block text-sm font-semibold mb-1.5">Gender</label>
       <select
         value={gender}
         onChange={(e) => setGender(e.target.value)}
-        style={{
-          display: "block",
-          width: "100%",
-          padding: 10,
-          marginTop: 6,
-          marginBottom: 20,
-          borderRadius: 8,
-          border: "1px solid #ccc",
-          fontSize: 14,
-        }}
+        className="w-full px-4 py-3 border border-zinc-200 rounded-xl text-base mb-5 focus:outline-none focus:ring-2 focus:ring-zinc-900"
       >
         <option value="mens">Men</option>
         <option value="womens">Women</option>
@@ -270,42 +280,28 @@ function OnboardingView({ onSubmit }: { onSubmit: (d: OnboardingData) => void })
       </select>
 
       {/* Brands */}
-      <label style={{ fontWeight: 600, fontSize: 14 }}>
+      <label className="block text-sm font-semibold mb-1.5">
         Favorite brands (comma-separated)
       </label>
       <input
         value={brands}
         onChange={(e) => setBrands(e.target.value)}
         placeholder="Nike, Zara, Uniqlo"
-        style={{
-          display: "block",
-          width: "100%",
-          padding: 10,
-          marginTop: 6,
-          marginBottom: 20,
-          borderRadius: 8,
-          border: "1px solid #ccc",
-          fontSize: 14,
-          boxSizing: "border-box",
-        }}
+        className="w-full px-4 py-3 border border-zinc-200 rounded-xl text-base mb-5 focus:outline-none focus:ring-2 focus:ring-zinc-900"
       />
 
       {/* Style */}
-      <label style={{ fontWeight: 600, fontSize: 14 }}>Style preferences</label>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 8,
-          marginTop: 8,
-          marginBottom: 20,
-        }}
-      >
+      <label className="block text-sm font-semibold mb-2">Style preferences</label>
+      <div className="flex flex-wrap gap-2 mb-5">
         {STYLE_OPTIONS.map((s) => (
           <button
             key={s}
             onClick={() => toggle(styles, s, setStyles)}
-            style={styles.includes(s) ? chipActive : chipBase}
+            className={`px-4 py-2 rounded-full text-sm border transition-colors ${
+              styles.includes(s)
+                ? "bg-zinc-900 text-white border-zinc-900"
+                : "bg-white text-zinc-700 border-zinc-200 hover:border-zinc-400"
+            }`}
           >
             {s}
           </button>
@@ -313,21 +309,17 @@ function OnboardingView({ onSubmit }: { onSubmit: (d: OnboardingData) => void })
       </div>
 
       {/* Occasions */}
-      <label style={{ fontWeight: 600, fontSize: 14 }}>Occasions</label>
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 8,
-          marginTop: 8,
-          marginBottom: 20,
-        }}
-      >
+      <label className="block text-sm font-semibold mb-2">Occasions</label>
+      <div className="flex flex-wrap gap-2 mb-5">
         {OCCASION_OPTIONS.map((o) => (
           <button
             key={o}
             onClick={() => toggle(occasions, o, setOccasions)}
-            style={occasions.includes(o) ? chipActive : chipBase}
+            className={`px-4 py-2 rounded-full text-sm border transition-colors ${
+              occasions.includes(o)
+                ? "bg-zinc-900 text-white border-zinc-900"
+                : "bg-white text-zinc-700 border-zinc-200 hover:border-zinc-400"
+            }`}
           >
             {o}
           </button>
@@ -335,18 +327,10 @@ function OnboardingView({ onSubmit }: { onSubmit: (d: OnboardingData) => void })
       </div>
 
       {/* Price range */}
-      <label style={{ fontWeight: 600, fontSize: 14 }}>
+      <label className="block text-sm font-semibold mb-2">
         Price range: ${priceMin} – ${priceMax}
       </label>
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          marginTop: 8,
-          marginBottom: 28,
-          alignItems: "center",
-        }}
-      >
+      <div className="flex gap-3 items-center mb-8">
         <input
           type="range"
           min={0}
@@ -354,7 +338,7 @@ function OnboardingView({ onSubmit }: { onSubmit: (d: OnboardingData) => void })
           step={10}
           value={priceMin}
           onChange={(e) => setPriceMin(Number(e.target.value))}
-          style={{ flex: 1 }}
+          className="flex-1"
         />
         <input
           type="range"
@@ -363,275 +347,118 @@ function OnboardingView({ onSubmit }: { onSubmit: (d: OnboardingData) => void })
           step={10}
           value={priceMax}
           onChange={(e) => setPriceMax(Number(e.target.value))}
-          style={{ flex: 1 }}
+          className="flex-1"
         />
       </div>
 
       <button
         onClick={handleSubmit}
-        style={{
-          width: "100%",
-          background: "#111",
-          color: "#fff",
-          border: "none",
-          borderRadius: 12,
-          padding: "14px 0",
-          fontSize: 16,
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
+        className="w-full bg-zinc-900 text-white rounded-xl py-4 text-base font-semibold"
       >
-        Continue
+        Join Queue
       </button>
     </div>
   );
 }
 
-function OutfitCardView({
-  outfit,
-  index,
-  total,
-  greeting,
-  onReaction,
-}: {
-  outfit: Outfit;
-  index: number;
-  total: number;
-  greeting: string;
-  onReaction: (r: "liked" | "disliked" | "skipped") => void;
-}) {
+/* ---------- Idle View ---------- */
+
+const TIPS = [
+  "Try saying: \"I want something for a night out\"",
+  "Give a thumbs up to save items you like",
+  "Swipe left or right to browse outfits",
+  "Ask Mira about your style or upcoming events",
+];
+
+function IdleView() {
+  const [tipIndex, setTipIndex] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const tipTimer = setInterval(() => {
+      setTipIndex((i) => (i + 1) % TIPS.length);
+    }, 5000);
+    const clockTimer = setInterval(() => {
+      setElapsed((s) => s + 1);
+    }, 1000);
+    return () => {
+      clearInterval(tipTimer);
+      clearInterval(clockTimer);
+    };
+  }, []);
+
+  const minutes = Math.floor(elapsed / 60);
+  const seconds = elapsed % 60;
+
   return (
-    <div style={{ padding: 24, maxWidth: 480, margin: "0 auto" }}>
-      {/* Progress */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
-      >
-        <p style={{ fontSize: 13, color: "#999", margin: 0 }}>
-          {index + 1} of {total}
-        </p>
-        {index === 0 && greeting && (
-          <p
-            style={{
-              fontSize: 13,
-              color: "#666",
-              margin: 0,
-              fontStyle: "italic",
-              maxWidth: 220,
-              textAlign: "right",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {greeting}
-          </p>
-        )}
+    <div className="flex flex-col items-center justify-center min-h-screen p-8 gap-8">
+      <div className="w-20 h-20 rounded-full bg-green-500 flex items-center justify-center">
+        <span className="text-white text-3xl">✦</span>
       </div>
 
-      {/* Outfit name */}
-      <h2
-        style={{
-          fontSize: 22,
-          fontWeight: 700,
-          margin: "0 0 4px",
-        }}
-      >
-        {outfit.outfit_name}
+      <h2 className="text-2xl font-bold text-center">
+        You&apos;re at the mirror!
       </h2>
-      <p style={{ fontSize: 14, color: "#666", margin: "0 0 16px" }}>
-        {outfit.description}
-      </p>
 
-      {/* Items stack */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
-        {outfit.items.map((oi, idx) => (
-          <div
-            key={idx}
-            style={{
-              display: "flex",
-              gap: 12,
-              background: "#fff",
-              borderRadius: 12,
-              padding: 10,
-              boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
-            }}
-          >
-            <div
-              style={{
-                width: 80,
-                height: 80,
-                borderRadius: 8,
-                overflow: "hidden",
-                flexShrink: 0,
-                background: "#eee",
-              }}
-            >
-              <img
-                src={oi.item.cleaned_image_url ?? oi.item.flat_image_url ?? oi.item.image_url}
-                alt={oi.item.title}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                }}
-              />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p
-                style={{
-                  fontSize: 14,
-                  fontWeight: 600,
-                  margin: "0 0 4px",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {oi.item.title}
-              </p>
-              <p style={{ fontSize: 13, color: "#666", margin: "0 0 4px" }}>
-                {oi.item.price}
-              </p>
-              <a
-                href={oi.item.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ fontSize: 12, color: "#0066cc" }}
-              >
-                Buy →
-              </a>
-            </div>
-          </div>
-        ))}
+      <div className="h-12 flex items-center">
+        <p className="text-zinc-500 text-center text-sm animate-pulse transition-all">
+          {TIPS[tipIndex]}
+        </p>
       </div>
 
-      {/* Mira comment */}
-      <p
-        style={{
-          fontSize: 14,
-          fontStyle: "italic",
-          color: "#555",
-          marginBottom: 24,
-          lineHeight: 1.5,
-        }}
-      >
-        &ldquo;{outfit.mira_comment}&rdquo;
-      </p>
-
-      {/* Reaction buttons */}
-      <div style={{ display: "flex", gap: 12 }}>
-        <ReactionButton
-          label="👎"
-          subLabel="Nope"
-          onClick={() => onReaction("disliked")}
-          bg="#f5f5f5"
-          color="#333"
-        />
-        <ReactionButton
-          label="→"
-          subLabel="Skip"
-          onClick={() => onReaction("skipped")}
-          bg="#f5f5f5"
-          color="#333"
-        />
-        <ReactionButton
-          label="👍"
-          subLabel="Love it"
-          onClick={() => onReaction("liked")}
-          bg="#111"
-          color="#fff"
-        />
+      <div className="text-zinc-400 text-sm font-mono">
+        {String(minutes).padStart(2, "0")}:{String(seconds).padStart(2, "0")}
       </div>
     </div>
   );
 }
 
-function ReactionButton({
-  label,
-  subLabel,
-  onClick,
-  bg,
-  color,
-}: {
-  label: string;
-  subLabel: string;
-  onClick: () => void;
-  bg: string;
-  color: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        flex: 1,
-        background: bg,
-        color,
-        border: "none",
-        borderRadius: 12,
-        padding: "14px 0",
-        fontSize: 20,
-        cursor: "pointer",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 2,
-      }}
-    >
-      <span>{label}</span>
-      <span style={{ fontSize: 11, opacity: 0.7 }}>{subLabel}</span>
-    </button>
-  );
-}
+/* ---------- Recap View ---------- */
 
-function DoneView({
-  liked,
-  total,
-  onRestart,
+function RecapView({
+  data,
+  onDone,
 }: {
-  liked: number;
-  total: number;
-  onRestart: () => void;
+  data: { summary?: string; items_shown?: number; items_liked?: number };
+  onDone: () => void;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100vh",
-        padding: 32,
-        textAlign: "center",
-      }}
-    >
-      <h2 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>
-        All done!
-      </h2>
-      <p style={{ fontSize: 16, color: "#666", marginBottom: 8 }}>
-        You liked {liked} outfit{liked !== 1 ? "s" : ""} out of {total}.
-      </p>
-      <p style={{ fontSize: 14, color: "#999", marginBottom: 32 }}>
-        {total - liked} new items to explore next time.
-      </p>
-      <button
-        onClick={onRestart}
-        style={{
-          background: "#111",
-          color: "#fff",
-          border: "none",
-          borderRadius: 12,
-          padding: "14px 40px",
-          fontSize: 16,
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
+    <div className="flex flex-col items-center justify-center min-h-screen p-8 gap-6">
+      <h2 className="text-2xl font-bold">Session Complete</h2>
+
+      {data.summary && (
+        <p className="text-zinc-600 text-center max-w-sm">{data.summary}</p>
+      )}
+
+      <div className="flex gap-8">
+        {data.items_shown !== undefined && (
+          <div className="text-center">
+            <p className="text-3xl font-bold">{data.items_shown}</p>
+            <p className="text-xs text-zinc-500">Items Shown</p>
+          </div>
+        )}
+        {data.items_liked !== undefined && (
+          <div className="text-center">
+            <p className="text-3xl font-bold">{data.items_liked}</p>
+            <p className="text-xs text-zinc-500">Liked</p>
+          </div>
+        )}
+      </div>
+
+      <a
+        href="#"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-600 underline text-sm"
       >
-        Start Over
+        View on Poke
+      </a>
+
+      <button
+        onClick={onDone}
+        className="w-full max-w-sm bg-zinc-900 text-white rounded-xl py-4 text-base font-semibold"
+      >
+        Done
       </button>
     </div>
   );
