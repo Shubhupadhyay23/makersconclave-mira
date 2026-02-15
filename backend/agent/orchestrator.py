@@ -66,6 +66,7 @@ class SessionState:
     user_context: dict = field(default_factory=dict)
     system_prompt: str = ""
     _last_shown_item: dict | None = None
+    voice_messages: list = field(default_factory=list)
 
 
 class MiraOrchestrator:
@@ -367,8 +368,16 @@ class MiraOrchestrator:
                     room=session.user_id,
                 )
 
-            # Track items shown (only present_items counts — search_clothing is invisible)
-            if tool_use.name == "present_items" and result.get("items"):
+            # Cache voice messages for session history
+            if tool_use.name == "send_voice_to_client" and result.get("text"):
+                session.voice_messages.append({
+                    "text": result["text"],
+                    "emotion": result.get("emotion", "neutral"),
+                    "timestamp": time.time(),
+                })
+
+            # Track items shown (present_items + display_product count — search_clothing is invisible)
+            if tool_use.name in ("present_items", "display_product") and result.get("items"):
                 session.items_shown += len(result["items"])
                 if result["items"]:
                     session._last_shown_item = result["items"][0]
@@ -555,6 +564,40 @@ class MiraOrchestrator:
 
 
 # --- Recommendation Pipeline (standalone functions for REST endpoints) ---
+
+
+def _outfits_to_display_payloads(outfits: list) -> list[dict]:
+    """Convert REST pipeline outfit format into display_product-style payloads.
+
+    Matches the frontend_payload shape emitted by the _display_product tool,
+    so the mirror's tool_result listener can handle both paths identically.
+    Items without flat lay images are skipped (raw product photos look wrong on overlay).
+    """
+    payloads = []
+    for outfit in outfits:
+        items = []
+        for oi in outfit.get("items", []):
+            item = oi.get("item", {})
+            if not item.get("cleaned_image_url") and not item.get("flat_image_url"):
+                continue
+            items.append({
+                "title": item.get("title", ""),
+                "price": item.get("price", ""),
+                "image_url": item.get("image_url", ""),
+                "product_id": item.get("product_id", ""),
+                "type": oi.get("type", ""),
+                "cleaned_image_url": item.get("cleaned_image_url"),
+                "flat_image_url": item.get("flat_image_url"),
+                "link": item.get("link", ""),
+                "source": item.get("source", ""),
+            })
+        if items:
+            payloads.append({
+                "type": "display_product",
+                "items": items,
+                "outfit_name": outfit.get("outfit_name", ""),
+            })
+    return payloads
 
 
 def _extract_json_from_text(text: str) -> Optional[dict]:

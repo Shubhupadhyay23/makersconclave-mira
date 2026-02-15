@@ -8,16 +8,17 @@ import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
 import { useMemojiAvatar } from "@/hooks/useMemojiAvatar";
 import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
+import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
 import AvatarPiP from "@/components/mirror/AvatarPiP";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
-import ProductCarousel, {
-  type ProductCard,
-} from "@/components/mirror/ProductCarousel";
+import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
 import { SentenceBuffer } from "@/lib/sentence-buffer";
 import { findScriptedResponse, detectEmotion } from "@/lib/scripted-responses";
 import { socket } from "@/lib/socket";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
-import type { RecommendationResponse, Outfit } from "@/lib/types";
+import type { PoseResult } from "@/types/pose";
+import type { ClothingItem } from "@/types/clothing";
+import { mapToClothingItems } from "@/lib/map-clothing-items";
 
 export default function MirrorPageWrapper() {
   return (
@@ -40,12 +41,20 @@ function MirrorPage() {
   // Session state
   const [sessionActive, setSessionActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
-  const [products, setProducts] = useState<ProductCard[]>([]);
+  const [voiceMessage, setVoiceMessage] = useState<{ text: string; emotion: string } | null>(null);
 
-  // Recommendation state (from main)
-  const [outfitData, setOutfitData] = useState<RecommendationResponse["data"] | null>(null);
-  const [outfitActiveIndex, setOutfitActiveIndex] = useState(0);
-  const outfits = outfitData?.outfits ?? [];
+  // Pose detection + clothing overlay state
+  const [currentPose, setCurrentPose] = useState<PoseResult | null>(null);
+
+  interface CanvasOutfit {
+    name: string;
+    items: ClothingItem[];
+    productInfo: PriceStripItem[];
+  }
+  const [canvasOutfits, setCanvasOutfits] = useState<CanvasOutfit[]>([]);
+  const [canvasOutfitIndex, setCanvasOutfitIndex] = useState(0);
+  const activeCanvasOutfit = canvasOutfits[canvasOutfitIndex]?.items ?? [];
+  const activePriceItems = canvasOutfits[canvasOutfitIndex]?.productInfo ?? [];
 
   // Avatar + voice
   const avatar = useMemojiAvatar();
@@ -70,14 +79,16 @@ function MirrorPage() {
     [avatar.speak],
   );
 
-  // Auto-advance outfit carousel
-  useEffect(() => {
-    if (outfits.length <= 1) return;
-    const timer = setInterval(() => {
-      setOutfitActiveIndex((i) => (i + 1) % outfits.length);
-    }, 8000);
-    return () => clearInterval(timer);
-  }, [outfits.length]);
+  // Pose detection for clothing overlay
+  const handlePoseUpdate = useCallback((result: PoseResult) => {
+    setCurrentPose(result);
+  }, []);
+
+  usePoseDetection({
+    videoRef,
+    isVideoReady: isCameraReady,
+    onPoseUpdate: handlePoseUpdate,
+  });
 
   // Connect socket and join user room
   useEffect(() => {
@@ -87,16 +98,7 @@ function MirrorPage() {
       socket.emit("join_room", { user_id: userId });
     }
 
-    // Recommendation events (from main)
-    socket.on("outfits_ready", (result: RecommendationResponse) => {
-      if (result.status === "success" && result.data) {
-        setOutfitData(result.data);
-        setOutfitActiveIndex(0);
-      }
-    });
-
     return () => {
-      socket.off("outfits_ready");
       socket.disconnect();
     };
   }, [userId]);
@@ -106,6 +108,8 @@ function MirrorPage() {
     const handleSessionActive = () => {
       setSessionActive(true);
       setIsStarting(false);
+      setCanvasOutfits([]);
+      setCanvasOutfitIndex(0);
       avatar.startSession();
       stt.startListening();
     };
@@ -180,11 +184,41 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionActive, isStarting, sentenceBuffer]);
 
-  // Listen for tool_result events (product recommendations)
+  // Listen for tool_result events (product recommendations + voice messages)
   useEffect(() => {
-    const handleToolResult = (data: { tool?: string; items?: ProductCard[] }) => {
-      if (data.tool === "present_items" && data.items) {
-        setProducts(data.items);
+    const handleToolResult = (data: {
+      type?: string;
+      tool?: string;
+      items?: { title: string; price?: string; [key: string]: unknown }[];
+      text?: string;
+      emotion?: string;
+      outfit_name?: string;
+    }) => {
+      // display_product: flat lay items from Gemini pipeline
+      if (data.type === "display_product" && data.items) {
+        const clothingItems = mapToClothingItems(data.items);
+        const priceInfo: PriceStripItem[] = data.items.map((it) => ({
+          title: it.title,
+          price: it.price,
+        }));
+        if (clothingItems.length > 0) {
+          setCanvasOutfits((prev) => {
+            const next = [...prev, {
+              name: data.outfit_name || `Outfit ${prev.length + 1}`,
+              items: clothingItems,
+              productInfo: priceInfo,
+            }];
+            setCanvasOutfitIndex(next.length - 1);
+            return next;
+          });
+        }
+        return;
+      }
+      // voice_message: text for TTS / display
+      if (data.type === "voice_message" && data.text) {
+        setVoiceMessage({ text: data.text, emotion: data.emotion ?? "neutral" });
+        avatar.speak(data.text);
+        return;
       }
     };
 
@@ -192,7 +226,8 @@ function MirrorPage() {
     return () => {
       socket.off("tool_result", handleToolResult);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avatar.speak]);
 
   // Listen for session_ended
   useEffect(() => {
@@ -200,7 +235,8 @@ function MirrorPage() {
       avatar.stopSession();
       stt.stopListening();
       setSessionActive(false);
-      setProducts([]);
+      setCanvasOutfits([]);
+      setCanvasOutfitIndex(0);
     };
 
     socket.on("session_ended", handleSessionEnded);
@@ -290,12 +326,13 @@ function MirrorPage() {
       gestureKeyRef.current += 1;
       setGestureKey(gestureKeyRef.current);
 
-      // Forward to carousel if it exists
-      const carouselGesture = (
-        window as unknown as Record<string, unknown>
-      ).__carouselGesture as ((g: GestureType) => void) | undefined;
-      if (carouselGesture) {
-        carouselGesture(gesture.type);
+      // Navigate canvas outfits with swipe gestures
+      if (canvasOutfits.length > 1) {
+        if (gesture.type === "swipe_left") {
+          setCanvasOutfitIndex((i) => (i + 1) % canvasOutfits.length);
+        } else if (gesture.type === "swipe_right") {
+          setCanvasOutfitIndex((i) => (i - 1 + canvasOutfits.length) % canvasOutfits.length);
+        }
       }
 
       socket.emit("mirror_event", {
@@ -308,7 +345,7 @@ function MirrorPage() {
         },
       });
     },
-    [userId],
+    [userId, canvasOutfits.length],
   );
 
   const { isLoading: isModelLoading, error: modelError } =
@@ -317,21 +354,6 @@ function MirrorPage() {
       isVideoReady: isCameraReady,
       onGesture: handleGesture,
     });
-
-  const handleProductGesture = useCallback(
-    (gesture: GestureType, item: ProductCard) => {
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: {
-          type: "product_gesture",
-          gesture,
-          product_id: item.product_id,
-          title: item.title,
-        },
-      });
-    },
-    [userId],
-  );
 
   const handleStartSession = useCallback(() => {
     if (!userId || isStarting || sessionActive) return;
@@ -370,6 +392,28 @@ function MirrorPage() {
           transform: "scaleX(-1)",
         }}
       />
+
+      {/* Clothing overlay canvas */}
+      {activeCanvasOutfit.length > 0 && currentPose && (
+        <ClothingCanvas
+          pose={currentPose}
+          items={activeCanvasOutfit}
+          width={1920}
+          height={1080}
+        />
+      )}
+
+      {/* Outfit dot indicator */}
+      {canvasOutfits.length > 1 && (
+        <div style={{ position: "absolute", bottom: 20, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 8, zIndex: 18 }}>
+          {canvasOutfits.map((_, i) => (
+            <div key={i} style={{
+              width: 10, height: 10, borderRadius: "50%",
+              background: i === canvasOutfitIndex ? "#fff" : "rgba(255,255,255,0.3)",
+            }} />
+          ))}
+        </div>
+      )}
 
       {/* Start Session button (pre-session overlay) */}
       {!sessionActive && !isStarting && (
@@ -425,31 +469,9 @@ function MirrorPage() {
       {/* Gesture visual feedback */}
       <GestureIndicator key={gestureKey} gesture={lastGesture} />
 
-      {/* Product carousel (bottom, when products exist) */}
-      {sessionActive && products.length > 0 && (
-        <ProductCarousel items={products} onGesture={handleProductGesture} />
-      )}
-
-      {/* Outfit recommendation overlay (from recommendation pipeline) */}
-      {outfitData && outfits.length > 0 && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            zIndex: 15,
-            pointerEvents: "none",
-          }}
-        >
-          <OutfitsView
-            greeting={outfitData.greeting}
-            styleAnalysis={outfitData.style_analysis}
-            outfits={outfits}
-            activeIndex={outfitActiveIndex}
-            onDotClick={setOutfitActiveIndex}
-          />
-        </div>
+      {/* Price strip (bottom, when outfit active) */}
+      {sessionActive && activePriceItems.length > 0 && (
+        <PriceStrip items={activePriceItems} />
       )}
 
       {/* Voice indicator (bottom-left, session only) */}
@@ -497,161 +519,3 @@ function MirrorPage() {
   );
 }
 
-/* ── Recommendation sub-components (from main) ── */
-
-function OutfitsView({
-  greeting,
-  styleAnalysis,
-  outfits,
-  activeIndex,
-  onDotClick,
-}: {
-  greeting: string;
-  styleAnalysis: string;
-  outfits: Outfit[];
-  activeIndex: number;
-  onDotClick: (i: number) => void;
-}) {
-  const outfit = outfits[activeIndex];
-  if (!outfit) return null;
-
-  return (
-    <div
-      style={{
-        width: "100%",
-        display: "flex",
-        flexDirection: "column",
-        padding: 40,
-        boxSizing: "border-box",
-        color: "#fff",
-      }}
-    >
-      {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <p style={{ fontSize: 22, fontWeight: 300, margin: 0 }}>{greeting}</p>
-        <p style={{ fontSize: 14, opacity: 0.6, marginTop: 6 }}>
-          {styleAnalysis}
-        </p>
-      </div>
-
-      {/* Outfit card */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 20,
-        }}
-      >
-        <p
-          style={{
-            fontSize: 20,
-            fontWeight: 600,
-            letterSpacing: 1,
-            margin: 0,
-          }}
-        >
-          {outfit.outfit_name}
-        </p>
-
-        {/* Items row */}
-        <div
-          style={{
-            display: "flex",
-            gap: 24,
-            justifyContent: "center",
-            flexWrap: "wrap",
-          }}
-        >
-          {outfit.items.map((oi, idx) => (
-            <div
-              key={idx}
-              style={{
-                textAlign: "center",
-                width: 180,
-              }}
-            >
-              <div
-                style={{
-                  width: 180,
-                  height: 220,
-                  background: "#1a1a1a",
-                  borderRadius: 8,
-                  overflow: "hidden",
-                  marginBottom: 8,
-                }}
-              >
-                <img
-                  src={oi.item.cleaned_image_url ?? oi.item.flat_image_url ?? oi.item.image_url}
-                  alt={oi.item.title}
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    objectFit: "contain",
-                  }}
-                />
-              </div>
-              <p
-                style={{
-                  fontSize: 13,
-                  margin: 0,
-                  opacity: 0.9,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {oi.item.title}
-              </p>
-              <p style={{ fontSize: 13, margin: "4px 0 0", opacity: 0.6 }}>
-                {oi.item.price}
-              </p>
-            </div>
-          ))}
-        </div>
-
-        {/* Mira comment */}
-        <p
-          style={{
-            fontSize: 15,
-            fontStyle: "italic",
-            opacity: 0.7,
-            maxWidth: 600,
-            textAlign: "center",
-            margin: 0,
-          }}
-        >
-          &ldquo;{outfit.mira_comment}&rdquo;
-        </p>
-      </div>
-
-      {/* Navigation dots */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          gap: 10,
-          paddingTop: 20,
-          pointerEvents: "auto",
-        }}
-      >
-        {outfits.map((_, i) => (
-          <button
-            key={i}
-            onClick={() => onDotClick(i)}
-            style={{
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              border: "none",
-              background: i === activeIndex ? "#fff" : "rgba(255,255,255,0.3)",
-              cursor: "pointer",
-              padding: 0,
-            }}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}

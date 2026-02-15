@@ -4,7 +4,7 @@ import { useRef, useEffect } from 'react';
 import type { PoseResult } from '@/types/pose';
 import { POSE_LANDMARKS } from '@/types/pose';
 import type { ClothingItem } from '@/types/clothing';
-import { landmarkToPixel, calculateClothingTransform } from '../lib/clothing-transform';
+import { landmarkToPixel, calculateClothingTransform } from '@/lib/clothing-transform';
 
 interface DebugOverlayProps {
   pose: PoseResult | null;

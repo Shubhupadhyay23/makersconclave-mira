@@ -5,7 +5,7 @@ import { useCamera } from '@/hooks/useCamera';
 import { usePoseDetection } from '@/hooks/usePoseDetection';
 import type { PoseResult } from '@/types/pose';
 import type { ClothingItem } from '@/types/clothing';
-import { ClothingCanvas } from './components/ClothingCanvas';
+import { ClothingCanvas } from '@/components/mirror/ClothingCanvas';
 import { DebugOverlay } from './components/DebugOverlay';
 import { TestSidebar } from './components/TestSidebar';
 import { DEFAULT_OUTFITS } from './lib/test-data';

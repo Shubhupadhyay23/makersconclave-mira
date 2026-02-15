@@ -7,7 +7,7 @@ import socketio
 from routers import auth, queue, users, tts
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
-from agent.orchestrator import MiraOrchestrator, generate_outfit_recommendations, update_outfit_reaction
+from agent.orchestrator import MiraOrchestrator, generate_outfit_recommendations, update_outfit_reaction, _outfits_to_display_payloads
 from models.database import get_neon_client
 from models.schemas import OnboardingQuestionnaireResponse, OutfitReactionUpdate
 from services.user_data_service import save_onboarding_data
@@ -77,6 +77,12 @@ async def create_outfit_recommendations(session_id: str):
 
         # Generate recommendations
         result = await generate_outfit_recommendations(user_id, session_id, db)
+
+        # Also emit to mirror display via socket so ClothingCanvas picks it up
+        if result.get("status") == "success" and result.get("data"):
+            payloads = _outfits_to_display_payloads(result["data"].get("outfits", []))
+            for payload in payloads:
+                await sio.emit("tool_result", payload, room=user_id)
 
         return result
 
@@ -247,8 +253,12 @@ async def session_started(sid, data):
     try:
         result = await generate_outfit_recommendations(user_id, session_id, db)
 
-        # Emit results
-        await sio.emit("outfits_ready", result, room=sid)
+        # Emit as individual display_product payloads so the mirror's
+        # tool_result → ClothingCanvas path handles them (not outfits_ready)
+        if result.get("status") == "success" and result.get("data"):
+            payloads = _outfits_to_display_payloads(result["data"].get("outfits", []))
+            for payload in payloads:
+                await sio.emit("tool_result", payload, room=sid)
 
     except Exception as e:
         await sio.emit(

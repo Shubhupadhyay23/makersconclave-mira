@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mirrorless — Recommendation Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 32px; }
+    .header { text-align: center; margin-bottom: 40px; }
+    .header h1 { font-size: 28px; font-weight: 300; margin-bottom: 8px; }
+    .header .greeting { font-size: 16px; opacity: 0.7; max-width: 700px; margin: 0 auto 12px; line-height: 1.5; }
+    .header .style { font-size: 14px; opacity: 0.5; max-width: 600px; margin: 0 auto; line-height: 1.4; }
+    .header .meta { font-size: 12px; opacity: 0.3; margin-top: 12px; }
+    .outfit { background: #1a1a1a; border-radius: 16px; padding: 28px; margin-bottom: 32px; }
+    .outfit-header { margin-bottom: 20px; }
+    .outfit-name { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+    .outfit-desc { font-size: 14px; opacity: 0.6; line-height: 1.4; }
+    .outfit-mira { font-size: 13px; opacity: 0.5; font-style: italic; margin-top: 8px; }
+    .items { display: flex; gap: 24px; flex-wrap: wrap; }
+    .item { flex: 1; min-width: 280px; max-width: 400px; }
+    .item-type { font-size: 11px; text-transform: uppercase; letter-spacing: 2px; opacity: 0.4; margin-bottom: 8px; }
+    .image-compare { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
+    .image-box { text-align: center; flex: 1; }
+    .image-box img { width: 100%; max-height: 300px; object-fit: contain; border-radius: 10px; background: #222; padding: 4px; }
+    .image-box .label { font-size: 10px; opacity: 0.4; margin-top: 6px; text-transform: uppercase; letter-spacing: 1px; }
+    .item-title { font-size: 14px; font-weight: 500; }
+    .item-price { font-size: 14px; opacity: 0.6; }
+    .item-source { font-size: 12px; opacity: 0.3; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+    .badge-flatlay { background: #2d5a2d; color: #6fdc6f; }
+    .badge-original { background: #5a3a2d; color: #dc9a6f; }
+    .loading { text-align: center; padding: 80px; font-size: 18px; opacity: 0.5; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Mirrorless Recommendations</h1>
+    <div class="greeting" id="greeting"></div>
+    <div class="style" id="style"></div>
+    <div class="meta" id="meta"></div>
+  </div>
+  <div id="outfits"><div class="loading">Loading recommendations...</div></div>
+
+  <script>
+    fetch('/test-recs.json')
+      .then(r => r.json())
+      .then(data => {
+        if (data.status !== 'success') {
+          document.getElementById('outfits').innerHTML = `<div class="loading">${data.message || 'Error'}</div>`;
+          return;
+        }
+        const rec = data.data;
+        document.getElementById('greeting').textContent = rec.greeting || '';
+        document.getElementById('style').textContent = rec.style_analysis || '';
+        document.getElementById('meta').textContent = `${rec.outfits.length} outfits · Generated in ${data.generation_time_ms}ms`;
+
+        const container = document.getElementById('outfits');
+        container.innerHTML = '';
+
+        rec.outfits.forEach((outfit, i) => {
+          const div = document.createElement('div');
+          div.className = 'outfit';
+
+          let itemsHtml = '';
+          (outfit.items || []).forEach(oi => {
+            const item = oi.item || {};
+            const hasFlatlay = !!item.cleaned_image_url;
+            const flatlaySrc = item.cleaned_image_url || item.flat_image_url || '';
+            const originalSrc = item.image_url || '';
+            const badge = hasFlatlay
+              ? '<span class="badge badge-flatlay">FLAT LAY</span>'
+              : '<span class="badge badge-original">ORIGINAL</span>';
+
+            itemsHtml += `
+              <div class="item">
+                <div class="item-type">${oi.type || ''}</div>
+                <div class="image-compare">
+                  <div class="image-box">
+                    <img src="${originalSrc}" alt="Original" onerror="this.style.display='none'">
+                    <div class="label">Original</div>
+                  </div>
+                  ${hasFlatlay ? `
+                  <div class="image-box">
+                    <img src="${flatlaySrc}" alt="Flat Lay" onerror="this.style.display='none'">
+                    <div class="label">Flat Lay</div>
+                  </div>` : ''}
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                  <div class="item-title">${item.title || ''}</div>
+                  ${badge}
+                </div>
+                <div class="item-price">${item.price || ''}</div>
+                <div class="item-source">${item.source || ''}</div>
+              </div>
+            `;
+          });
+
+          div.innerHTML = `
+            <div class="outfit-header">
+              <div class="outfit-name">Outfit ${i + 1}: ${outfit.outfit_name || ''}</div>
+              <div class="outfit-desc">${outfit.description || ''}</div>
+              <div class="outfit-mira">"${outfit.mira_comment || ''}"</div>
+            </div>
+            <div class="items">${itemsHtml}</div>
+          `;
+          container.appendChild(div);
+        });
+      })
+      .catch(err => {
+        document.getElementById('outfits').innerHTML = `<div class="loading">Error: ${err.message}</div>`;
+      });
+  </script>
+</body>
+</html>
