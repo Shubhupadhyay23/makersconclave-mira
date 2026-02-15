@@ -100,14 +100,13 @@ function calculateTopTransform(
   const centerX = (tlPx.x + trPx.x + blPx.x + brPx.x) / 4;
   const centerY = (tlPx.y + trPx.y + blPx.y + brPx.y) / 4;
 
-  // Calculate dimensions
-  const topWidth = distance(tlPx, trPx);
-  const bottomWidth = distance(blPx, brPx);
-  const width = ((topWidth + bottomWidth) / 2) * PADDING_FACTOR;
+  // Calculate dimensions - use shoulder width as reference to maintain aspect ratio
+  const shoulderWidth = distance(tlPx, trPx);
+  const scale = shoulderWidth * PADDING_FACTOR * SIZE_MULTIPLIER;
 
-  const leftHeight = distance(tlPx, blPx);
-  const rightHeight = distance(trPx, brPx);
-  const height = ((leftHeight + rightHeight) / 2) * PADDING_FACTOR;
+  // Both width and height use the same scale to maintain aspect ratio
+  const width = scale;
+  const height = scale;
 
   // Calculate rotation from shoulder line
   // Add PI to flip 180 degrees (clothing images are typically oriented top-down)
@@ -116,8 +115,8 @@ function calculateTopTransform(
   return {
     centerX,
     centerY,
-    width: width * SIZE_MULTIPLIER,
-    height: height * SIZE_MULTIPLIER,
+    width,
+    height,
     rotation
   };
 }
@@ -153,14 +152,13 @@ function calculateBottomTransform(
   const centerX = (tlPx.x + trPx.x + blPx.x + brPx.x) / 4;
   const centerY = (tlPx.y + trPx.y + blPx.y + brPx.y) / 4;
 
-  // Calculate dimensions
-  const topWidth = distance(tlPx, trPx);
-  const bottomWidth = distance(blPx, brPx);
-  const width = ((topWidth + bottomWidth) / 2) * PADDING_FACTOR;
+  // Calculate dimensions - use hip width as reference to maintain aspect ratio
+  const hipWidth = distance(tlPx, trPx);
+  const scale = hipWidth * PADDING_FACTOR * SIZE_MULTIPLIER;
 
-  const leftHeight = distance(tlPx, blPx);
-  const rightHeight = distance(trPx, brPx);
-  const height = ((leftHeight + rightHeight) / 2) * PADDING_FACTOR;
+  // Both width and height use the same scale to maintain aspect ratio
+  const width = scale;
+  const height = scale;
 
   // Calculate rotation from hip line
   // Add PI to flip 180 degrees (clothing images are typically oriented top-down)
@@ -169,8 +167,8 @@ function calculateBottomTransform(
   return {
     centerX,
     centerY,
-    width: width * SIZE_MULTIPLIER,
-    height: height * SIZE_MULTIPLIER,
+    width,
+    height,
     rotation
   };
 }

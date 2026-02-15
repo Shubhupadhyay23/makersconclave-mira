@@ -24,10 +24,6 @@ export default function MirrorTestPage() {
   const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
   const [currentPose, setCurrentPose] = useState<PoseResult | null>(null);
 
-  // OpenCV state
-  const [isOpenCVReady, setIsOpenCVReady] = useState(false);
-  const [openCVError, setOpenCVError] = useState<string | null>(null);
-
   // Outfit state
   const [outfits, setOutfits] = useState<ClothingItem[][]>(DEFAULT_OUTFITS);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -47,52 +43,6 @@ export default function MirrorTestPage() {
     isVideoReady: isCameraReady,
     onPoseUpdate: handlePoseUpdate,
   });
-
-  // Load OpenCV.js on page init
-  useEffect(() => {
-    // Check if already loaded
-    if (typeof window !== 'undefined' && (window as any).cv) {
-      setIsOpenCVReady(true);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/opencv.js@4.9.0/opencv.js';
-    script.async = true;
-
-    script.onload = () => {
-      // OpenCV.js requires waiting for runtime initialization
-      const checkCV = setInterval(() => {
-        if ((window as any).cv && (window as any).cv.Mat) {
-          clearInterval(checkCV);
-          console.log('OpenCV.js loaded successfully');
-          setIsOpenCVReady(true);
-        }
-      }, 100);
-
-      // Timeout after 10 seconds
-      setTimeout(() => {
-        clearInterval(checkCV);
-        if (!isOpenCVReady) {
-          setOpenCVError('OpenCV.js failed to initialize');
-        }
-      }, 10000);
-    };
-
-    script.onerror = () => {
-      console.error('Failed to load OpenCV.js');
-      setOpenCVError('Failed to load OpenCV.js library');
-    };
-
-    document.body.appendChild(script);
-
-    return () => {
-      // Cleanup on unmount
-      if (script.parentNode) {
-        script.parentNode.removeChild(script);
-      }
-    };
-  }, []);
 
   // Toast management
   const showToast = useCallback((message: string, type: 'error' | 'success' = 'error') => {
@@ -343,7 +293,7 @@ export default function MirrorTestPage() {
 
       {/* Test sidebar */}
       <TestSidebar
-        items={outfits.flat()}
+        items={Array.from(new Map(outfits.flat().map(item => [item.id, item])).values())}
         currentIndex={currentIndex}
         onAdd={handleAddItem}
         onDelete={handleDeleteOutfit}
@@ -351,7 +301,7 @@ export default function MirrorTestPage() {
       />
 
       {/* Loading indicator */}
-      {(isPoseLoading || !isCameraReady || !isOpenCVReady) && (
+      {(isPoseLoading || !isCameraReady) && (
         <div
           style={{
             position: 'absolute',
@@ -366,9 +316,8 @@ export default function MirrorTestPage() {
         >
           <div style={{ marginBottom: 16 }}>Loading...</div>
           <div style={{ fontSize: '1rem', color: '#999' }}>
-            {!isOpenCVReady && 'Loading OpenCV.js (~8MB)...'}
-            {isOpenCVReady && !isCameraReady && 'Initializing camera...'}
-            {isOpenCVReady && isCameraReady && isPoseLoading && 'Loading pose detection model...'}
+            {!isCameraReady && 'Initializing camera...'}
+            {isCameraReady && isPoseLoading && 'Loading pose detection model...'}
           </div>
         </div>
       )}
