@@ -261,42 +261,15 @@ function MirrorPage() {
       const base64 = dataUrl.split(",")[1];
 
       socket.emit("mirror_event", {
+        type: "snapshot",
+        image_base64: base64,
         user_id: userId,
-        event: { type: "snapshot", image_base64: base64 },
       });
     };
 
     socket.on("request_snapshot", handleSnapshotRequest);
     return () => {
       socket.off("request_snapshot", handleSnapshotRequest);
-    };
-  }, [videoRef, userId]);
-
-  // Listen for on-demand photo requests from the orchestrator (take_photo tool)
-  useEffect(() => {
-    const handlePhotoRequest = () => {
-      const video = videoRef.current;
-      if (!video || video.readyState < video.HAVE_CURRENT_DATA) return;
-
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
-      ctx.drawImage(video, 0, 0);
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
-      const base64 = dataUrl.split(",")[1];
-
-      socket.emit("photo_response", {
-        user_id: userId,
-        image_base64: base64,
-      });
-    };
-
-    socket.on("request_photo", handlePhotoRequest);
-    return () => {
-      socket.off("request_photo", handlePhotoRequest);
     };
   }, [videoRef, userId]);
 

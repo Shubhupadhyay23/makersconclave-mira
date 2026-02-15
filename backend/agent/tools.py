@@ -304,64 +304,7 @@ TOOL_DEFINITIONS = [
             "required": ["brands", "gender"],
         },
     },
-    {
-        "name": "take_photo",
-        "description": (
-            "Take a photo of the user at the mirror right now. Use this to see what "
-            "the user is currently wearing, check if they changed clothes, or evaluate "
-            "how a suggested outfit looks on them. The photo will be returned to you "
-            "as an image you can analyze. Only call this when you genuinely need to "
-            "see the user — you already get a snapshot at session start."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "Brief reason for taking the photo, e.g. 'checking current outfit' or 'see if they changed'",
-                },
-            },
-            "required": ["reason"],
-        },
-    },
 ]
-
-# Standalone reference to the give_recommendation tool schema
-GIVE_RECOMMENDATION_TOOL = {
-    "name": "give_recommendation",
-    "description": (
-        "Search for clothing items from specific brands to build outfit recommendations. "
-        "Call this tool when you're ready to find tops and bottoms to recommend. "
-        "Returns a list of available clothing items (tops and bottoms) from the requested brands."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "brands": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "List of 3-7 clothing brand names to search for. "
-                    "Mix the user's favorite brands with popular brands for variety."
-                ),
-            },
-            "gender": {
-                "type": "string",
-                "enum": ["mens", "womens", "unisex"],
-                "description": "Gender category for clothing search.",
-            },
-            "style_notes": {
-                "type": "string",
-                "description": (
-                    "Brief notes about the user's style to guide search "
-                    "(e.g. 'casual streetwear', 'business casual', 'athleisure')."
-                ),
-            },
-        },
-        "required": ["brands", "gender"],
-    },
-}
-
 
 def _parse_price(price_str: str) -> float | None:
     """Extract numeric price from string like '$595.00'."""
@@ -436,8 +379,6 @@ async def execute_tool(tool_name: str, tool_input: dict, user_context: dict) -> 
         session_id = user_context.get("session_id", user_context.get("user_id", "default"))
         result_text = await execute_give_recommendation(tool_input, session_id)
         return {"results": result_text}
-    elif tool_name == "take_photo":
-        return {"error": "take_photo must be handled by the orchestrator"}
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 

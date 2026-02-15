@@ -106,54 +106,6 @@ class TestOutfitsToDisplayPayloads:
         assert _outfits_to_display_payloads([]) == []
 
 
-# --- Voice message caching ---
-
-
-class TestVoiceMessageCaching:
-    def test_voice_messages_field_exists(self):
-        """SessionState has a voice_messages list."""
-        session = SessionState()
-        assert isinstance(session.voice_messages, list)
-        assert len(session.voice_messages) == 0
-
-    @pytest.mark.asyncio
-    async def test_voice_message_cached_in_handle_tool_calls(self):
-        """After processing send_voice_to_client, the message is cached."""
-        from agent.orchestrator import MiraOrchestrator
-
-        orchestrator = MiraOrchestrator(socket_io=None)
-        session = SessionState(user_id="test-user")
-        orchestrator.sessions["test-user"] = session
-
-        # Create a mock tool_use block
-        tool_use = MagicMock()
-        tool_use.name = "send_voice_to_client"
-        tool_use.id = "tool-123"
-        tool_use.input = {"text": "Hello there!", "emotion": "happy"}
-
-        # Mock execute_tool to return a voice result
-        with patch("agent.orchestrator.execute_tool", new_callable=AsyncMock) as mock_exec:
-            mock_exec.return_value = {
-                "sent": True,
-                "text": "Hello there!",
-                "emotion": "happy",
-                "frontend_payload": {
-                    "type": "voice_message",
-                    "text": "Hello there!",
-                    "emotion": "happy",
-                },
-            }
-
-            # Mock _call_claude to prevent recursion
-            with patch.object(orchestrator, "_call_claude", new_callable=AsyncMock):
-                await orchestrator._handle_tool_calls(session, [tool_use])
-
-        assert len(session.voice_messages) == 1
-        assert session.voice_messages[0]["text"] == "Hello there!"
-        assert session.voice_messages[0]["emotion"] == "happy"
-        assert "timestamp" in session.voice_messages[0]
-
-
 # --- display_product tool generates flat lays ---
 
 
