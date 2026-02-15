@@ -1,9 +1,13 @@
 """Queue endpoints: join, status, skip, reorder, advance, start-session."""
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from models.database import NeonHTTPClient
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/queue", tags=["queue"])
 
@@ -104,10 +108,31 @@ async def join_queue(body: QueueJoinRequest, request: Request):
             """
             INSERT INTO queue (user_id, position)
             VALUES ($1::uuid, $2)
+            ON CONFLICT (user_id) WHERE status IN ('waiting', 'active') DO NOTHING
             RETURNING id, position, status
             """,
             [body.user_id, next_position],
         )
+        if not rows:
+            # Race condition: another request inserted between our SELECT and INSERT.
+            # Fetch the existing entry instead.
+            existing = await db.execute(
+                """
+                SELECT id, position, status FROM queue
+                WHERE user_id = $1::uuid AND status IN ('waiting', 'active')
+                """,
+                [body.user_id],
+            )
+            if existing:
+                row = existing[0]
+                await _emit_queue_updated(request, db)
+                return {
+                    "queue_id": row["id"],
+                    "position": row["position"],
+                    "status": row["status"],
+                    "total_ahead": 0,
+                }
+            raise HTTPException(status_code=500, detail="Failed to join queue")
         row = rows[0]
         total_ahead = await db.fetchval(
             """
@@ -145,6 +170,11 @@ async def join_queue(body: QueueJoinRequest, request: Request):
             "status": row["status"],
             "total_ahead": total_ahead,
         }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to join queue for user %s", body.user_id)
+        raise HTTPException(status_code=500, detail=f"Failed to join queue: {exc}")
     finally:
         await db.close()
 
