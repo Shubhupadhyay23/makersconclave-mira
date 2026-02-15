@@ -59,9 +59,9 @@ async def get_admin_session():
         # Find active session for this user
         session_rows = await db.execute(
             """
-            SELECT id, api_call_count FROM sessions
+            SELECT id FROM sessions
             WHERE user_id = $1::uuid AND status = 'active'
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY started_at DESC LIMIT 1
             """,
             [user_id],
         )
@@ -70,20 +70,20 @@ async def get_admin_session():
         api_calls = 0
         if session_rows:
             session_id = str(session_rows[0]["id"])
-            api_calls = session_rows[0].get("api_call_count", 0) or 0
+            api_calls = 0  # tracked in-memory by orchestrator, not persisted to DB
 
         # Count items shown/liked for this session
         items_shown = 0
         items_liked = 0
         if session_id:
             shown_val = await db.fetchval(
-                "SELECT COUNT(*) FROM outfit_items WHERE session_id = $1::uuid",
+                "SELECT COUNT(*) FROM session_outfits WHERE session_id = $1::uuid",
                 [session_id],
             )
             items_shown = int(shown_val) if shown_val else 0
 
             liked_val = await db.fetchval(
-                "SELECT COUNT(*) FROM outfit_items WHERE session_id = $1::uuid AND reaction = 'liked'",
+                "SELECT COUNT(*) FROM session_outfits WHERE session_id = $1::uuid AND reaction = 'liked'",
                 [session_id],
             )
             items_liked = int(liked_val) if liked_val else 0
@@ -115,26 +115,26 @@ async def get_booth_stats():
         avg_seconds = await db.fetchval(
             """
             SELECT COALESCE(
-                AVG(EXTRACT(EPOCH FROM (ended_at - created_at))), 0
+                AVG(EXTRACT(EPOCH FROM (ended_at - started_at))), 0
             )
             FROM sessions
-            WHERE created_at::date = CURRENT_DATE AND status = 'completed'
+            WHERE started_at::date = CURRENT_DATE AND status = 'completed'
             """,
         )
 
         total_shown = await db.fetchval(
             """
-            SELECT COUNT(*) FROM outfit_items oi
+            SELECT COUNT(*) FROM session_outfits oi
             JOIN sessions s ON s.id = oi.session_id
-            WHERE s.created_at::date = CURRENT_DATE
+            WHERE s.started_at::date = CURRENT_DATE
             """,
         )
 
         total_liked = await db.fetchval(
             """
-            SELECT COUNT(*) FROM outfit_items oi
+            SELECT COUNT(*) FROM session_outfits oi
             JOIN sessions s ON s.id = oi.session_id
-            WHERE s.created_at::date = CURRENT_DATE AND oi.reaction = 'liked'
+            WHERE s.started_at::date = CURRENT_DATE AND oi.reaction = 'liked'
             """,
         )
 

@@ -14,6 +14,7 @@ import { GestureIndicator } from "@/components/mirror/GestureIndicator";
 import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
 import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
+import SessionRecap from "@/components/mirror/SessionRecap";
 import { socket } from "@/lib/socket";
 import { skipQueueUser } from "@/lib/api";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
@@ -21,7 +22,7 @@ import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
 import { mapToClothingItems } from "@/lib/map-clothing-items";
 
-type KioskState = "attract" | "waiting" | "session";
+type KioskState = "attract" | "waiting" | "session" | "recap";
 
 interface ActiveUser {
   id: string;
@@ -44,6 +45,7 @@ function MirrorPage() {
   const [kioskState, setKioskState] = useState<KioskState>("attract");
   const [activeUser, setActiveUser] = useState<ActiveUser | null>(null);
   const waitingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingQueueRef = useRef<ActiveUser | null | undefined>(undefined);
 
   // Camera + gesture recognition
   const { videoRef, isReady: isCameraReady, error: cameraError } = useCamera();
@@ -67,6 +69,14 @@ function MirrorPage() {
   const [canvasOutfitIndex, setCanvasOutfitIndex] = useState(0);
   const activeCanvasOutfit = canvasOutfits[canvasOutfitIndex]?.items ?? [];
   const activePriceItems = canvasOutfits[canvasOutfitIndex]?.productInfo ?? [];
+
+  // Recap state (shown after session ends)
+  const [recapData, setRecapData] = useState<{
+    summary?: string;
+    liked_items?: Array<{ title: string; price?: string; image_url?: string }>;
+    stats?: { items_shown: number; likes: number; dislikes: number };
+    user_name?: string;
+  } | null>(null);
 
   // Mira video avatar + voice
   const mira = useMiraVideoAvatar();
@@ -117,6 +127,12 @@ function MirrorPage() {
     }) => {
       console.log("[Mirror] queue_updated:", data);
       if (kioskState === "session") return; // Don't interrupt active sessions
+
+      // During recap, store the update for when recap dismisses
+      if (kioskState === "recap") {
+        pendingQueueRef.current = data.active_user ?? null;
+        return;
+      }
 
       if (data.active_user) {
         setActiveUser(data.active_user);
@@ -244,11 +260,7 @@ function MirrorPage() {
         }
         return;
       }
-      if (data.type === "voice_message" && data.text) {
-        const emotion = detectEmotionFromText(data.text);
-        mira.speak(data.text, emotion);
-        return;
-      }
+      // voice_message type removed — TTS is handled by the mira_speech streaming path
     };
 
     socket.on("tool_result", handleToolResult);
@@ -258,17 +270,30 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mira.speak]);
 
-  // Listen for session_ended — return to attract or waiting
+  // Listen for session_ended — show recap overlay, then return to attract
   useEffect(() => {
-    const handleSessionEnded = () => {
-      mira.stopSession();
+    const handleSessionEnded = (data?: {
+      summary?: string;
+      liked_items?: Array<{ title: string; price?: string; image_url?: string }>;
+      stats?: { items_shown: number; likes: number; dislikes: number };
+      user_name?: string;
+    }) => {
+      // Don't stop mira immediately — let closing speech TTS finish playing
       stt.stopListening();
       setSessionActive(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
-      setActiveUser(null);
-      setKioskState("attract");
-      // Queue advancement happens server-side, queue_updated will fire next
+
+      // Show recap overlay (keep activeUser set for display)
+      if (data && (data.summary || data.liked_items?.length || data.stats)) {
+        setRecapData(data);
+        setKioskState("recap");
+      } else {
+        // No recap data — go straight to attract
+        mira.stopSession();
+        setActiveUser(null);
+        setKioskState("attract");
+      }
     };
 
     socket.on("session_ended", handleSessionEnded);
@@ -404,6 +429,25 @@ function MirrorPage() {
     if (!activeUser) return;
     skipQueueUser(activeUser.id).catch(() => {});
   }, [activeUser]);
+
+  // Dismiss recap overlay — transition to next queued user or attract
+  const handleRecapDismiss = useCallback(() => {
+    mira.stopSession();
+    setRecapData(null);
+
+    // Check if a queue_updated arrived during recap
+    const pending = pendingQueueRef.current;
+    pendingQueueRef.current = undefined;
+
+    if (pending) {
+      setActiveUser(pending);
+      setKioskState("waiting");
+    } else {
+      setActiveUser(null);
+      setKioskState("attract");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <main
@@ -600,6 +644,17 @@ function MirrorPage() {
         <VoiceIndicator
           isListening={stt.isListening}
           interimTranscript={stt.interimTranscript}
+        />
+      )}
+
+      {/* === RECAP STATE === */}
+      {recapData && (
+        <SessionRecap
+          summary={recapData.summary}
+          likedItems={recapData.liked_items || []}
+          stats={recapData.stats}
+          userName={recapData.user_name}
+          onDismiss={handleRecapDismiss}
         />
       )}
 

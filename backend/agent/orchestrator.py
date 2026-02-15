@@ -66,6 +66,7 @@ class SessionState:
     user_context: dict = field(default_factory=dict)
     system_prompt: str = ""
     _last_shown_item: dict | None = None
+    _event_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class MiraOrchestrator:
@@ -178,9 +179,17 @@ class MiraOrchestrator:
             "message": "A new user just stepped up to the mirror. Introduce yourself and start the session.",
         })
 
-        # Request a snapshot from the mirror so Mira can see the user
+        # Request a snapshot after a delay so it doesn't overlap with the greeting TTS.
+        # At session start, rapid-fire messages (greeting → snapshot → silence nudge)
+        # each increment the TTS generation counter, aborting the previous audio.
+        # A 10s delay lets the greeting play fully before the snapshot triggers.
+        async def _delayed_snapshot():
+            await asyncio.sleep(10)
+            if user_id in self.sessions and self.sessions[user_id].is_active:
+                await self.sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
+
         if self.sio:
-            await self.sio.emit("request_snapshot", {"user_id": user_id}, room=user_id)
+            asyncio.create_task(_delayed_snapshot())
 
         return session
 
@@ -195,83 +204,164 @@ class MiraOrchestrator:
             print(f"[mira] handle_event: no active session for {user_id}, ignoring event {event.get('type', '?')}")
             return
 
-        session.is_processing = True
-        try:
-            # Only restart the silence timer on real user input — not on
-            # silence events themselves, which would create a feedback loop
-            # (silence → Mira speaks → new timer → silence → repeat).
-            if event.get("type") != "silence":
-                session.last_input_time = time.time()
-                self._start_silence_timer(user_id)
+        # Block all new events once graceful shutdown has started
+        if session.wrapping_up:
+            print(f"[mira] Session wrapping up for {user_id}, ignoring event {event.get('type', '?')}")
+            return
 
-            # Track gesture outcomes
-            gesture = event.get("gesture")
-
-            if gesture in ("thumbs_up", "swipe_right"):
-                session.likes += 1
-                if session._last_shown_item:
-                    session.liked_items.append(session._last_shown_item)
-            elif gesture in ("thumbs_down", "swipe_left"):
-                session.dislikes += 1
-
-            # Build user message from event
-            user_message = self._event_to_message(event)
-            session.conversation_history.append({
-                "role": "user",
-                "content": user_message,
-            })
-
-            # Update system prompt with current session state
-            session.system_prompt = build_system_prompt(
-                user_profile=session.user_context.get("profile", {}),
-                purchases=session.user_context.get("purchases", []),
-                purchase_stats=session.user_context.get("purchase_stats"),
-                calendar_events=session.user_context.get("calendar_events"),
-                session_history=session.user_context.get("past_sessions", []),
-                session_state={
-                    "items_shown": session.items_shown,
-                    "likes": session.likes,
-                    "dislikes": session.dislikes,
-                    "api_calls": session.api_calls,
-                },
-            )
-
-            # Call Claude
+        async with session._event_lock:
+            session.is_processing = True
             try:
-                await self._call_claude(session)
-            except Exception as e:
-                print(f"[mira] Error calling Claude: {e}")
-                await self._stream_text(user_id, "Hmm, my brain glitched for a second. What were we talking about?")
-        finally:
-            session.is_processing = False
+                # Only restart the silence timer on real user input — not on
+                # silence events themselves, which would create a feedback loop
+                # (silence → Mira speaks → new timer → silence → repeat).
+                if event.get("type") != "silence":
+                    session.last_input_time = time.time()
+                    self._start_silence_timer(user_id)
+
+                # Track gesture outcomes
+                gesture = event.get("gesture")
+
+                if gesture in ("thumbs_up", "swipe_right"):
+                    session.likes += 1
+                    if session._last_shown_item:
+                        session.liked_items.append(session._last_shown_item)
+                elif gesture in ("thumbs_down", "swipe_left"):
+                    session.dislikes += 1
+
+                # Build user message from event
+                user_message = self._event_to_message(event)
+                session.conversation_history.append({
+                    "role": "user",
+                    "content": user_message,
+                })
+
+                # Update system prompt with current session state
+                session.system_prompt = build_system_prompt(
+                    user_profile=session.user_context.get("profile", {}),
+                    purchases=session.user_context.get("purchases", []),
+                    purchase_stats=session.user_context.get("purchase_stats"),
+                    calendar_events=session.user_context.get("calendar_events"),
+                    session_history=session.user_context.get("past_sessions", []),
+                    session_state={
+                        "items_shown": session.items_shown,
+                        "likes": session.likes,
+                        "dislikes": session.dislikes,
+                        "api_calls": session.api_calls,
+                    },
+                )
+
+                # Call Claude
+                try:
+                    await self._call_claude(session)
+                except Exception as e:
+                    print(f"[mira] Error calling Claude: {e}")
+                    await self._stream_text(user_id, "Hmm, my brain glitched for a second. What were we talking about?")
+                    await self._stream_text(user_id, "", end_of_message=True)
+            finally:
+                session.is_processing = False
 
     def _select_model(self, session: SessionState) -> tuple[str, int]:
-        """Select the right model and max_tokens for this turn.
+        """Select the right model and max_tokens for this turn."""
+        return SONNET_MODEL, 2048
 
-        Returns (model_id, max_tokens).
-        - Sonnet for conversational turns (speech quality matters)
-        - Haiku for tool-result processing (speed matters)
+    def _validate_history(self, session: SessionState) -> None:
+        """Validate conversation history and truncate to last valid point if corrupted.
+
+        Checks:
+        1. Alternating user → assistant → user roles (tool_result messages are user role)
+        2. Every assistant message with tool_use blocks is immediately followed by a
+           user message with matching tool_result blocks
+
+        If corruption is found, truncates history to the last valid position and logs
+        a warning. This is defense-in-depth — the event lock should prevent corruption,
+        but edge cases or future bugs could still cause issues.
         """
-        if session.conversation_history:
-            last_msg = session.conversation_history[-1]
-            # tool_result messages have list content with type: "tool_result" dicts
-            if last_msg.get("role") == "user" and isinstance(last_msg.get("content"), list):
-                if any(
-                    isinstance(block, dict) and block.get("type") == "tool_result"
-                    for block in last_msg["content"]
-                ):
-                    return HAIKU_MODEL, 2048
-        return SONNET_MODEL, 400
+        history = session.conversation_history
+        if not history:
+            return
+
+        valid_up_to = 0  # exclusive — history[:valid_up_to] is valid
+
+        i = 0
+        while i < len(history):
+            msg = history[i]
+            role = msg.get("role")
+
+            # First message must be from user
+            if i == 0 and role != "user":
+                print(f"[mira] History validation: first message is {role}, expected user — truncating")
+                break
+
+            # Check alternating roles (user and assistant)
+            if i > 0:
+                prev_role = history[i - 1].get("role")
+                # After user, expect assistant; after assistant, expect user
+                if prev_role == role and role != "user":
+                    # Two consecutive assistant messages — corruption
+                    print(f"[mira] History validation: consecutive {role} messages at index {i} — truncating")
+                    break
+                if prev_role == "user" and role == "user":
+                    # Two consecutive user messages — corruption (unless first is tool_result)
+                    # A tool_result user message followed by a regular user message is invalid
+                    print(f"[mira] History validation: consecutive user messages at index {i} — truncating")
+                    break
+
+            # If this is an assistant message with tool_use, verify next message has tool_results
+            if role == "assistant":
+                content = msg.get("content", [])
+                has_tool_use = False
+                if isinstance(content, list):
+                    has_tool_use = any(
+                        (getattr(block, "type", None) == "tool_use")
+                        or (isinstance(block, dict) and block.get("type") == "tool_use")
+                        for block in content
+                    )
+
+                if has_tool_use:
+                    # Must be followed by a user message with tool_result blocks
+                    if i + 1 >= len(history):
+                        print(f"[mira] History validation: tool_use at index {i} with no following tool_result — truncating")
+                        break
+                    next_msg = history[i + 1]
+                    if next_msg.get("role") != "user":
+                        print(f"[mira] History validation: tool_use at index {i} followed by {next_msg.get('role')} — truncating")
+                        break
+                    next_content = next_msg.get("content", [])
+                    has_tool_result = isinstance(next_content, list) and any(
+                        isinstance(block, dict) and block.get("type") == "tool_result"
+                        for block in next_content
+                    )
+                    if not has_tool_result:
+                        print(f"[mira] History validation: tool_use at index {i} followed by user message without tool_result — truncating")
+                        break
+
+            valid_up_to = i + 1
+            i += 1
+
+        if valid_up_to < len(history):
+            removed = len(history) - valid_up_to
+            session.conversation_history = history[:valid_up_to]
+            print(f"[mira] History validation: removed {removed} messages, kept {valid_up_to} for {session.user_id}")
 
     async def _call_claude(self, session: SessionState, tool_depth: int = 0) -> None:
         """Make a streaming Claude API call with tool use."""
+        if session.wrapping_up:
+            return
+
         if tool_depth >= 3:
             print(f"[mira] Tool depth limit reached ({tool_depth}) for {session.user_id}, stopping")
             return
 
         if session.api_calls >= SOFT_API_LIMIT:
-            print(f"[mira] API limit reached for {session.user_id}")
+            print(f"[mira] API limit reached for {session.user_id}, initiating graceful shutdown")
+            if not session.wrapping_up:
+                session.wrapping_up = True
+                await self._graceful_shutdown(session)
             return
+
+        # Defense-in-depth: validate history before sending to Claude
+        self._validate_history(session)
 
         session.api_calls += 1
         model, max_tokens = self._select_model(session)
@@ -402,8 +492,12 @@ class MiraOrchestrator:
             "content": tool_results,
         })
 
-        # Call Claude again to process tool results
-        await self._call_claude(session, tool_depth=tool_depth + 1)
+        # Only re-call Claude if there are tools that return data it needs to process.
+        # Fire-and-forget tools (like send_voice_to_client) don't need a follow-up turn.
+        FIRE_AND_FORGET_TOOLS = {"send_voice_to_client"}
+        tool_names = {tu.name for tu in tool_uses}
+        if not tool_names.issubset(FIRE_AND_FORGET_TOOLS):
+            await self._call_claude(session, tool_depth=tool_depth + 1)
 
     async def end_session(self, user_id: str) -> dict | None:
         """End a session and save summary."""
@@ -454,6 +548,7 @@ class MiraOrchestrator:
                         "likes": session.likes,
                         "dislikes": session.dislikes,
                     },
+                    "user_name": session.user_context.get("profile", {}).get("name", ""),
                 },
                 room=user_id,
             )
@@ -475,6 +570,65 @@ class MiraOrchestrator:
             ],
         )
         return response.content[0].text
+
+    async def _graceful_shutdown(self, session: SessionState) -> None:
+        """Gracefully end a session when the API limit is reached.
+
+        Generates a warm closing speech, streams it via TTS, then ends the session.
+        """
+        user_id = session.user_id
+        self._cancel_silence_timer(user_id)
+
+        # Generate and stream the closing speech so the user hears a goodbye
+        closing_speech = await self._generate_closing_speech(session)
+        await self._stream_text(user_id, closing_speech)
+        await self._stream_text(user_id, "", end_of_message=True)
+
+        # Brief pause to let TTS start playing before session teardown
+        await asyncio.sleep(0.5)
+
+        # Guard: session may have been force-ended during the sleep
+        if user_id not in self.sessions:
+            print(f"[mira] Session already ended for {user_id} during graceful shutdown")
+            return
+
+        # End session — saves summary, emits session_ended with recap payload
+        await self.end_session(user_id)
+
+    async def _generate_closing_speech(self, session: SessionState) -> str:
+        """Generate a warm, in-character closing message from Mira.
+
+        Separate from _generate_summary() because the summary is a clinical DB
+        record, while this is a spoken goodbye the user hears via TTS.
+        """
+        liked_names = [item.get("title", "an item") for item in session.liked_items[:5]]
+        liked_str = ", ".join(liked_names) if liked_names else "the styles we explored"
+
+        try:
+            response = await self.client.messages.create(
+                model=HAIKU_MODEL,
+                max_tokens=200,
+                system=(
+                    "You are Mira, a warm and stylish AI fashion advisor wrapping up a session. "
+                    "Give a brief closing recap (2-3 sentences). Mention their favorites, give a confidence boost, "
+                    "and let them know their picks are saved to their phone. "
+                    "Start with [emotion:proud]. Keep it conversational — no markdown, no lists."
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Session stats: {session.items_shown} items shown, "
+                            f"{session.likes} liked, {session.dislikes} passed. "
+                            f"Favorites: {liked_str}. Wrap up warmly."
+                        ),
+                    }
+                ],
+            )
+            return response.content[0].text
+        except Exception as e:
+            print(f"[mira] Closing speech generation failed, using fallback: {e}")
+            return "[emotion:proud] That was a great session! Your favorites are saved to your phone. See you next time!"
 
     def _event_to_message(self, event: dict) -> str | list:
         """Convert an event dict to a Claude user message."""

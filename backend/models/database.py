@@ -65,7 +65,18 @@ class NeonHTTPClient:
                 "Neon-Connection-String": self.connection_string,
             },
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # Surface the actual SQL error from Neon instead of a generic HTTP error
+            try:
+                body = resp.json()
+                detail = body.get("message") or body.get("error") or resp.text
+            except Exception:
+                detail = resp.text
+            raise httpx.HTTPStatusError(
+                f"Neon SQL error ({resp.status_code}): {detail}",
+                request=resp.request,
+                response=resp,
+            )
         data = resp.json()
         return data.get("rows", [])
 

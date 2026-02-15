@@ -29,6 +29,14 @@ export default function PhonePage() {
     items_liked?: number;
   }>({});
 
+  // Shape of the actual session_ended payload from backend
+  interface SessionEndedPayload {
+    summary?: string;
+    stats?: { items_shown: number; likes: number; dislikes: number };
+    liked_items?: Array<{ title: string; price?: string; image_url?: string }>;
+    user_name?: string;
+  }
+
   // Check for returning user on mount
   useEffect(() => {
     async function checkReturning() {
@@ -54,12 +62,12 @@ export default function PhonePage() {
     socket.connect();
     socket.emit("join_room", { user_id: user.id });
 
-    const handleSessionEnded = (data: {
-      summary?: string;
-      items_shown?: number;
-      items_liked?: number;
-    }) => {
-      setRecapData(data || {});
+    const handleSessionEnded = (data: SessionEndedPayload) => {
+      setRecapData({
+        summary: data?.summary,
+        items_shown: data?.stats?.items_shown,
+        items_liked: data?.stats?.likes,
+      });
       setState("recap");
     };
 
