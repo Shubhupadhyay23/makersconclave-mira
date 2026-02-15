@@ -4,6 +4,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const API_BASE =
   process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:8000";
 
+/** Request helper for the Python backend (absolute URL). */
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -12,6 +13,19 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Request helper for Next.js API routes (relative path, runs on Vercel). */
+async function localRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || body.error || `Request failed: ${res.status}`);
   }
   return res.json();
 }
@@ -32,7 +46,7 @@ export interface QueueInfo {
 }
 
 export function googleLogin(code: string, redirectUri: string = "postmessage") {
-  return request<UserProfile>("/auth/google", {
+  return localRequest<UserProfile>("/api/auth/google", {
     method: "POST",
     body: JSON.stringify({ code, redirect_uri: redirectUri }),
   });
@@ -44,38 +58,38 @@ export function updateProfile(userId: string, name: string, phone?: string) {
     name,
   };
   if (phone !== undefined) payload.phone = phone;
-  return request<UserProfile>("/auth/profile", {
+  return localRequest<UserProfile>("/api/auth/profile", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export function uploadSelfie(userId: string, selfieBase64: string) {
-  return request<UserProfile>("/auth/selfie", {
+  return localRequest<UserProfile>("/api/auth/selfie", {
     method: "POST",
     body: JSON.stringify({ user_id: userId, selfie_base64: selfieBase64 }),
   });
 }
 
 export function joinQueue(userId: string) {
-  return request<QueueInfo>("/queue/join", {
+  return localRequest<QueueInfo>("/api/queue/join", {
     method: "POST",
     body: JSON.stringify({ user_id: userId }),
   });
 }
 
 export function getQueueStatus(userId: string) {
-  return request<QueueInfo>(`/queue/status/${userId}`);
+  return localRequest<QueueInfo>(`/api/queue/status/${userId}`);
 }
 
 export function leaveQueue(userId: string) {
-  return request<{ status: string }>(`/queue/leave/${userId}`, {
+  return localRequest<{ status: string }>(`/api/queue/leave/${userId}`, {
     method: "POST",
   });
 }
 
 export function getUser(userId: string) {
-  return request<UserProfile>(`/users/${userId}`);
+  return localRequest<UserProfile>(`/api/users/${userId}`);
 }
 
 export interface Purchase {
