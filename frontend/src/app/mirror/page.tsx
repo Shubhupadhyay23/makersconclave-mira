@@ -1,24 +1,30 @@
 "use client";
 
 import { Suspense } from "react";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
-import { useMemojiAvatar } from "@/hooks/useMemojiAvatar";
+import { usePoseDetection } from "@/hooks/usePoseDetection";
+import { useOrbAvatar } from "@/hooks/useOrbAvatar";
 import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
+import { parseEmotionTag } from "@/lib/emotion-parser";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
 import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
-import AvatarPiP from "@/components/mirror/AvatarPiP";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
 import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
-import { SentenceBuffer } from "@/lib/sentence-buffer";
-import { findScriptedResponse, detectEmotion } from "@/lib/scripted-responses";
 import { socket } from "@/lib/socket";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
 import type { ClothingItem } from "@/types/clothing";
 import { mapToClothingItems } from "@/lib/map-clothing-items";
+
+// Lazy-load the Orb (Three.js is heavy — don't block initial paint)
+const Orb = dynamic(
+  () => import("@/components/ui/orb").then((mod) => ({ default: mod.Orb })),
+  { ssr: false },
+);
 
 export default function MirrorPageWrapper() {
   return (
@@ -41,7 +47,6 @@ function MirrorPage() {
   // Session state
   const [sessionActive, setSessionActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
-  const [voiceMessage, setVoiceMessage] = useState<{ text: string; emotion: string } | null>(null);
 
   // Pose detection + clothing overlay state
   const [currentPose, setCurrentPose] = useState<PoseResult | null>(null);
@@ -56,28 +61,15 @@ function MirrorPage() {
   const activeCanvasOutfit = canvasOutfits[canvasOutfitIndex]?.items ?? [];
   const activePriceItems = canvasOutfits[canvasOutfitIndex]?.productInfo ?? [];
 
-  // Avatar + voice
-  const avatar = useMemojiAvatar();
+  // Orb avatar + voice
+  const orb = useOrbAvatar();
   const stt = useDeepgramSTT();
 
-  // Queue transcripts while avatar is speaking, send when quiet
+  // Queue transcripts while orb is speaking, send when quiet
   const pendingTranscriptRef = useRef<string | null>(null);
 
-  // Accumulate full response text before deciding delivery method
+  // Accumulate full response text before delivering
   const responseAccumulatorRef = useRef<string>("");
-
-  // Stash remaining text after a scripted video; drained when video ends
-  const pendingTTSAfterScriptedRef = useRef<string | null>(null);
-
-  // Sentence buffer: used for non-scripted responses (TTS path)
-  const sentenceBuffer = useMemo(
-    () =>
-      new SentenceBuffer((sentence) => {
-        avatar.speak(sentence);
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [avatar.speak],
-  );
 
   // Pose detection for clothing overlay
   const handlePoseUpdate = useCallback((result: PoseResult) => {
@@ -110,7 +102,7 @@ function MirrorPage() {
       setIsStarting(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
-      avatar.startSession();
+      orb.startSession();
       stt.startListening();
     };
 
@@ -128,7 +120,7 @@ function MirrorPage() {
       if (!sessionActive && !isStarting) {
         setSessionActive(true);
         setIsStarting(false);
-        avatar.startSession();
+        orb.startSession();
         stt.startListening();
       }
 
@@ -137,10 +129,8 @@ function MirrorPage() {
         if (!data.text) return;
         console.log("[Mirror] mira_speech chunk received");
         responseAccumulatorRef.current += data.text;
-        avatar.setAvatarState("thinking");
+        orb.setOrbState("thinking");
       } else {
-        // New complete message arrived — discard any stale pending TTS
-        pendingTTSAfterScriptedRef.current = null;
         // End of message — accumulate any final text, then deliver
         if (data.text) {
           responseAccumulatorRef.current += data.text;
@@ -150,30 +140,10 @@ function MirrorPage() {
         console.log("[Mirror] Agent full response:", fullText);
         if (!fullText) return;
 
-        // Check for scripted response match
-        const scripted = findScriptedResponse(fullText);
-
-        if (scripted) {
-          // Play pre-recorded video, then TTS any remaining text
-          console.log("[Mirror] Scripted match:", scripted.phrase);
-          const phraseIdx = fullText.toLowerCase().indexOf(scripted.phrase);
-          const afterPhrase = phraseIdx >= 0
-            ? fullText.slice(phraseIdx + scripted.phrase.length).trim()
-            : "";
-          if (afterPhrase) {
-            pendingTTSAfterScriptedRef.current = afterPhrase;
-            console.log("[Mirror] Pending TTS after scripted:", afterPhrase.slice(0, 80));
-          }
-          avatar.playScripted(scripted.video);
-        } else {
-          // No match — detect emotion for avatar state, then TTS per sentence
-          const emotion = detectEmotion(fullText);
-          avatar.setAvatarState(emotion);
-
-          // Feed full text through sentence buffer for per-sentence TTS
-          sentenceBuffer.feed(fullText);
-          sentenceBuffer.flush();
-        }
+        // Parse emotion tag and stream TTS
+        const { emotion, cleanText } = parseEmotionTag(fullText);
+        console.log("[Mirror] Parsed emotion:", emotion);
+        orb.speak(cleanText, emotion);
       }
     };
 
@@ -182,7 +152,7 @@ function MirrorPage() {
       socket.off("mira_speech", handleSpeech);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionActive, isStarting, sentenceBuffer]);
+  }, [sessionActive, isStarting]);
 
   // Listen for tool_result events (product recommendations + voice messages)
   useEffect(() => {
@@ -216,8 +186,7 @@ function MirrorPage() {
       }
       // voice_message: text for TTS / display
       if (data.type === "voice_message" && data.text) {
-        setVoiceMessage({ text: data.text, emotion: data.emotion ?? "neutral" });
-        avatar.speak(data.text);
+        orb.speak(data.text);
         return;
       }
     };
@@ -227,12 +196,12 @@ function MirrorPage() {
       socket.off("tool_result", handleToolResult);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [avatar.speak]);
+  }, [orb.speak]);
 
   // Listen for session_ended
   useEffect(() => {
     const handleSessionEnded = () => {
-      avatar.stopSession();
+      orb.stopSession();
       stt.stopListening();
       setSessionActive(false);
       setCanvasOutfits([]);
@@ -246,22 +215,9 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Drain pending TTS text after a scripted video finishes playing
+  // Send transcripts to backend when orb stops speaking
   useEffect(() => {
-    if (!avatar.isSpeaking && pendingTTSAfterScriptedRef.current) {
-      const text = pendingTTSAfterScriptedRef.current;
-      pendingTTSAfterScriptedRef.current = null;
-      console.log("[Mirror] Draining pending TTS after scripted:", text.slice(0, 80));
-      const emotion = detectEmotion(text);
-      avatar.setAvatarState(emotion);
-      sentenceBuffer.feed(text);
-      sentenceBuffer.flush();
-    }
-  }, [avatar.isSpeaking, avatar.setAvatarState, sentenceBuffer]);
-
-  // Send transcripts to backend when avatar stops speaking
-  useEffect(() => {
-    if (!avatar.isSpeaking && pendingTranscriptRef.current && userId) {
+    if (!orb.isSpeaking && pendingTranscriptRef.current && userId) {
       console.log("[Mirror] Flushing queued transcript:", pendingTranscriptRef.current);
       socket.emit("mirror_event", {
         user_id: userId,
@@ -269,14 +225,14 @@ function MirrorPage() {
       });
       pendingTranscriptRef.current = null;
     }
-  }, [avatar.isSpeaking, userId]);
+  }, [orb.isSpeaking, userId]);
 
   // Forward final STT transcripts
   useEffect(() => {
     if (!stt.transcript || !userId) return;
 
-    if (avatar.isSpeaking) {
-      console.log("[Mirror] Queuing transcript (avatar speaking):", stt.transcript);
+    if (orb.isSpeaking) {
+      console.log("[Mirror] Queuing transcript (orb speaking):", stt.transcript);
       pendingTranscriptRef.current = stt.transcript;
     } else {
       console.log("[Mirror] Sending transcript to backend:", stt.transcript);
@@ -305,15 +261,42 @@ function MirrorPage() {
       const base64 = dataUrl.split(",")[1];
 
       socket.emit("mirror_event", {
-        type: "snapshot",
-        image_base64: base64,
         user_id: userId,
+        event: { type: "snapshot", image_base64: base64 },
       });
     };
 
     socket.on("request_snapshot", handleSnapshotRequest);
     return () => {
       socket.off("request_snapshot", handleSnapshotRequest);
+    };
+  }, [videoRef, userId]);
+
+  // Listen for on-demand photo requests from the orchestrator (take_photo tool)
+  useEffect(() => {
+    const handlePhotoRequest = () => {
+      const video = videoRef.current;
+      if (!video || video.readyState < video.HAVE_CURRENT_DATA) return;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+      const base64 = dataUrl.split(",")[1];
+
+      socket.emit("photo_response", {
+        user_id: userId,
+        image_base64: base64,
+      });
+    };
+
+    socket.on("request_photo", handlePhotoRequest);
+    return () => {
+      socket.off("request_photo", handlePhotoRequest);
     };
   }, [videoRef, userId]);
 
@@ -365,6 +348,21 @@ function MirrorPage() {
     setIsStarting(true);
     socket.emit("start_session", { user_id: userId });
   }, [userId, isStarting, sessionActive]);
+
+  // Context-aware orb positioning
+  const orbStyle = useMemo<React.CSSProperties>(() => {
+    const hasProducts = canvasOutfits.length > 0;
+    if (orb.orbState === "idle") {
+      return { top: 24, right: 24, width: 120, height: 120 };
+    }
+    if (orb.orbState === "thinking") {
+      return { top: "35%", left: "50%", transform: "translateX(-50%)", width: 180, height: 180 };
+    }
+    if (hasProducts) {
+      return { top: 24, right: 24, width: 150, height: 150 };
+    }
+    return { top: "25%", right: 40, width: 200, height: 200 };
+  }, [orb.orbState, canvasOutfits.length]);
 
   return (
     <main
@@ -463,8 +461,28 @@ function MirrorPage() {
         </div>
       )}
 
-      {/* Avatar PiP (top-right, always mounted so ref stays alive) */}
-      <AvatarPiP containerRef={avatar.containerRef} isReady={avatar.isReady} visible={sessionActive} />
+      {/* Orb avatar (context-aware positioning) */}
+      {sessionActive && (
+        <div
+          style={{
+            position: "absolute",
+            zIndex: 10,
+            borderRadius: "50%",
+            overflow: "hidden",
+            transition: "all 0.6s ease-in-out",
+            ...orbStyle,
+          }}
+        >
+          <Orb
+            className="h-full w-full"
+            volumeMode="manual"
+            outputVolumeRef={orb.outputVolumeRef}
+            colorsRef={orb.colorsRef}
+            agentState={orb.agentState}
+            seed={42}
+          />
+        </div>
+      )}
 
       {/* Gesture visual feedback */}
       <GestureIndicator key={gestureKey} gesture={lastGesture} />
@@ -518,4 +536,3 @@ function MirrorPage() {
     </main>
   );
 }
-

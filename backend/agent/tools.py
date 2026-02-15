@@ -304,6 +304,26 @@ TOOL_DEFINITIONS = [
             "required": ["brands", "gender"],
         },
     },
+    {
+        "name": "take_photo",
+        "description": (
+            "Take a photo of the user at the mirror right now. Use this to see what "
+            "the user is currently wearing, check if they changed clothes, or evaluate "
+            "how a suggested outfit looks on them. The photo will be returned to you "
+            "as an image you can analyze. Only call this when you genuinely need to "
+            "see the user — you already get a snapshot at session start."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Brief reason for taking the photo, e.g. 'checking current outfit' or 'see if they changed'",
+                },
+            },
+            "required": ["reason"],
+        },
+    },
 ]
 
 # Standalone reference to the give_recommendation tool schema
@@ -416,6 +436,8 @@ async def execute_tool(tool_name: str, tool_input: dict, user_context: dict) -> 
         session_id = user_context.get("session_id", user_context.get("user_id", "default"))
         result_text = await execute_give_recommendation(tool_input, session_id)
         return {"results": result_text}
+    elif tool_name == "take_photo":
+        return {"error": "take_photo must be handled by the orchestrator"}
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 

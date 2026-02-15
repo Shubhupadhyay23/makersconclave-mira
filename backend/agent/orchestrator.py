@@ -40,6 +40,7 @@ load_dotenv()
 SONNET_MODEL = "claude-sonnet-4-5-20250929"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SILENCE_TIMEOUT_SECONDS = 5
+PHOTO_TIMEOUT_SECONDS = 5
 EVENT_BATCH_WINDOW_MS = 200
 SOFT_API_LIMIT = 20
 
@@ -81,6 +82,7 @@ class MiraOrchestrator:
         self.sio = socket_io
         self.sessions: dict[str, SessionState] = {}
         self._silence_tasks: dict[str, asyncio.Task] = {}
+        self._pending_photos: dict[str, asyncio.Future] = {}
 
     async def start_session(self, user_id: str) -> SessionState:
         """Initialize a new Mira session for a user."""
@@ -257,6 +259,14 @@ class MiraOrchestrator:
             last_msg = session.conversation_history[-1]
             # tool_result messages have list content with type: "tool_result" dicts
             if last_msg.get("role") == "user" and isinstance(last_msg.get("content"), list):
+                # Use Sonnet for image-containing tool results (take_photo)
+                for block in last_msg["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        content = block.get("content")
+                        if isinstance(content, list) and any(
+                            isinstance(c, dict) and c.get("type") == "image" for c in content
+                        ):
+                            return SONNET_MODEL, 400
                 if any(
                     isinstance(block, dict) and block.get("type") == "tool_result"
                     for block in last_msg["content"]
@@ -345,6 +355,34 @@ class MiraOrchestrator:
                 input_str = input_str[:200] + "..."
             print(f"[mira] Tool call: {tool_use.name}({input_str})")
 
+            # take_photo is handled directly by the orchestrator (bypasses execute_tool)
+            if tool_use.name == "take_photo":
+                try:
+                    photo_result = await self._take_photo(
+                        session.user_id, tool_use.input.get("reason", "checking outfit")
+                    )
+                except Exception as e:
+                    photo_result = {"error": f"Photo capture failed: {e}"}
+
+                if "error" in photo_result:
+                    tool_result_block = {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": json.dumps(photo_result),
+                        "is_error": True,
+                    }
+                else:
+                    tool_result_block = {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": [
+                            {"type": "text", "text": f"Photo captured ({photo_result['reason']}). Here is what the user looks like right now:"},
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": photo_result["image_base64"]}},
+                        ],
+                    }
+                tool_results.append(tool_result_block)
+                continue
+
             try:
                 result = await execute_tool(
                     tool_name=tool_use.name,
@@ -399,6 +437,37 @@ class MiraOrchestrator:
 
         # Call Claude again to process tool results
         await self._call_claude(session, tool_depth=tool_depth + 1)
+
+    async def _take_photo(self, user_id: str, reason: str) -> dict:
+        """Request a photo from the mirror and wait for the response."""
+        if not self.sio:
+            return {"error": "Socket.io not available"}
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._pending_photos[user_id] = future
+
+        await self.sio.emit("request_photo", {"user_id": user_id}, room=user_id)
+
+        try:
+            image_base64 = await asyncio.wait_for(future, timeout=PHOTO_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            return {"error": "Photo capture timed out — the mirror camera may not be ready"}
+        finally:
+            self._pending_photos.pop(user_id, None)
+
+        if not image_base64:
+            return {"error": "Photo capture returned empty data"}
+
+        return {"success": True, "reason": reason, "image_base64": image_base64}
+
+    def resolve_photo(self, user_id: str, image_base64: str) -> bool:
+        """Resolve a pending photo Future. Returns True if resolved."""
+        future = self._pending_photos.get(user_id)
+        if future and not future.done():
+            future.set_result(image_base64)
+            return True
+        return False
 
     async def end_session(self, user_id: str) -> dict | None:
         """End a session and save summary."""

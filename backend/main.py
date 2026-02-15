@@ -217,6 +217,18 @@ async def mirror_event(sid, data):
 
 
 @sio.event
+async def photo_response(sid, data):
+    """Handle photo responses from the mirror (bypasses handle_event to avoid deadlock)."""
+    user_id = data.get("user_id")
+    image_base64 = data.get("image_base64")
+    if not user_id or not image_base64:
+        return
+    resolved = mira.resolve_photo(user_id, image_base64)
+    if not resolved:
+        print(f"[socket] photo_response: no pending request for {user_id}")
+
+
+@sio.event
 async def end_session(sid, data):
     """End a Mira session."""
     user_id = data.get("user_id")

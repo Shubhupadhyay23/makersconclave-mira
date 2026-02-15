@@ -1,28 +1,20 @@
 import { describe, it, expect, vi } from "vitest";
-import { SentenceBuffer } from "@/lib/sentence-buffer";
-import { findScriptedResponse, detectEmotion } from "@/lib/scripted-responses";
+import { parseEmotionTag } from "@/lib/emotion-parser";
 
 /**
- * Simulate the mira_speech handler logic from mirror/page.tsx.
+ * Simulate the new mira_speech handler logic from mirror/page.tsx.
  *
- * This reproduces the exact branching that processes streamed chunks
- * and the end-of-message flush signal, including the scripted response
- * matching and TTS continuation for remaining text.
+ * The new flow is simpler: accumulate chunks → parse emotion tag → speak.
+ * No more scripted matching, sentence buffering, or pending TTS drain.
  */
-function createHandler(onSentence: (s: string) => void) {
+function createHandler(onSpeak: (text: string, emotion: string) => void) {
   let accumulator = "";
-  let pendingTTSAfterScripted: string | null = null;
-  const sentenceBuffer = new SentenceBuffer(onSentence);
 
   const handler = (data: { text?: string; is_chunk?: boolean }) => {
     if (data.is_chunk !== false) {
-      // Chunk branch — skip empty chunks
       if (!data.text) return;
       accumulator += data.text;
     } else {
-      // New complete message — discard stale pending TTS
-      pendingTTSAfterScripted = null;
-      // End-of-message branch — must always run
       if (data.text) {
         accumulator += data.text;
       }
@@ -30,160 +22,116 @@ function createHandler(onSentence: (s: string) => void) {
       accumulator = "";
       if (!fullText) return;
 
-      const scripted = findScriptedResponse(fullText);
-
-      if (scripted) {
-        const phraseIdx = fullText.toLowerCase().indexOf(scripted.phrase);
-        const afterPhrase = phraseIdx >= 0
-          ? fullText.slice(phraseIdx + scripted.phrase.length).trim()
-          : "";
-        if (afterPhrase) {
-          pendingTTSAfterScripted = afterPhrase;
-        }
-        // avatar.playScripted(scripted.video) — simulated by caller
-      } else {
-        sentenceBuffer.feed(fullText);
-        sentenceBuffer.flush();
-      }
+      const { emotion, cleanText } = parseEmotionTag(fullText);
+      onSpeak(cleanText, emotion);
     }
   };
 
-  /** Simulate the scripted video ending (isSpeaking → false) */
-  const drainPendingTTS = () => {
-    if (pendingTTSAfterScripted) {
-      const text = pendingTTSAfterScripted;
-      pendingTTSAfterScripted = null;
-      sentenceBuffer.feed(text);
-      sentenceBuffer.flush();
-    }
-  };
-
-  return { handler, drainPendingTTS };
+  return { handler };
 }
 
-describe("mira_speech handler", () => {
-  it("flushes accumulated chunks when end-of-message arrives with empty text", () => {
-    const onSentence = vi.fn();
-    const { handler } = createHandler(onSentence);
+describe("mira_speech handler (orb flow)", () => {
+  it("flushes accumulated chunks when end-of-message arrives", () => {
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
 
-    // Simulate streaming: 3 chunks then end-of-message with text: ""
     handler({ text: "Hello ", is_chunk: true });
     handler({ text: "world, ", is_chunk: true });
     handler({ text: "how are you?", is_chunk: true });
     handler({ text: "", is_chunk: false });
 
-    expect(onSentence).toHaveBeenCalled();
-    const allText = onSentence.mock.calls.map((c) => c[0]).join(" ");
-    expect(allText).toContain("Hello world, how are you?");
+    expect(onSpeak).toHaveBeenCalledTimes(1);
+    expect(onSpeak).toHaveBeenCalledWith("Hello world, how are you?", "neutral");
   });
 
-  it("flushes when end-of-message carries final text", () => {
-    const onSentence = vi.fn();
-    const { handler } = createHandler(onSentence);
+  it("parses emotion tag and strips it from text", () => {
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
 
-    handler({ text: "First part. ", is_chunk: true });
-    handler({ text: "Last part", is_chunk: false });
+    handler({
+      text: "[emotion:teasing] Oh honey, those cargo shorts?",
+      is_chunk: false,
+    });
 
-    expect(onSentence).toHaveBeenCalled();
-    const allText = onSentence.mock.calls.map((c) => c[0]).join(" ");
-    expect(allText).toContain("First part.");
-    expect(allText).toContain("Last part");
+    expect(onSpeak).toHaveBeenCalledWith("Oh honey, those cargo shorts?", "teasing");
+  });
+
+  it("parses emotion tag from accumulated chunks", () => {
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
+
+    handler({ text: "[emotion:proud] Now ", is_chunk: true });
+    handler({ text: "THAT is a look.", is_chunk: true });
+    handler({ text: "", is_chunk: false });
+
+    expect(onSpeak).toHaveBeenCalledWith("Now THAT is a look.", "proud");
+  });
+
+  it("defaults to neutral when no emotion tag present", () => {
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
+
+    handler({ text: "Just plain text.", is_chunk: false });
+
+    expect(onSpeak).toHaveBeenCalledWith("Just plain text.", "neutral");
   });
 
   it("skips empty chunks without breaking accumulation", () => {
-    const onSentence = vi.fn();
-    const { handler } = createHandler(onSentence);
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
 
     handler({ text: "Start", is_chunk: true });
     handler({ text: "", is_chunk: true }); // empty chunk — ignored
     handler({ text: " end", is_chunk: true });
     handler({ text: "", is_chunk: false });
 
-    const allText = onSentence.mock.calls.map((c) => c[0]).join(" ");
-    expect(allText).toContain("Start end");
+    expect(onSpeak).toHaveBeenCalledWith("Start end", "neutral");
   });
 
   it("does nothing when end-of-message arrives with no accumulated text", () => {
-    const onSentence = vi.fn();
-    const { handler } = createHandler(onSentence);
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
 
     handler({ text: "", is_chunk: false });
 
-    expect(onSentence).not.toHaveBeenCalled();
+    expect(onSpeak).not.toHaveBeenCalled();
   });
 
   it("handles multiple complete message cycles", () => {
-    const onSentence = vi.fn();
-    const { handler } = createHandler(onSentence);
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
 
     // First message
-    handler({ text: "First message.", is_chunk: true });
-    handler({ text: "", is_chunk: false });
-    expect(onSentence).toHaveBeenCalledTimes(1);
+    handler({ text: "[emotion:proud] First.", is_chunk: false });
+    expect(onSpeak).toHaveBeenCalledWith("First.", "proud");
 
-    onSentence.mockClear();
+    onSpeak.mockClear();
 
     // Second message
-    handler({ text: "Second message.", is_chunk: true });
-    handler({ text: "", is_chunk: false });
-    expect(onSentence).toHaveBeenCalledTimes(1);
+    handler({ text: "[emotion:teasing] Second.", is_chunk: false });
+    expect(onSpeak).toHaveBeenCalledWith("Second.", "teasing");
   });
 
-  it("scripted match stashes remainder and drains via TTS after video ends", () => {
-    const onSentence = vi.fn();
-    const { handler, drainPendingTTS } = createHandler(onSentence);
+  it("flushes when end-of-message carries final text", () => {
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
 
-    // Response starts with a scripted phrase followed by unique text
-    handler({
-      text: "okay here's the thing, you should try a bomber jacket with those jeans.",
-      is_chunk: false,
-    });
+    handler({ text: "[emotion:neutral] First part. ", is_chunk: true });
+    handler({ text: "Last part", is_chunk: false });
 
-    // Scripted video playing — onSentence should NOT have been called yet
-    expect(onSentence).not.toHaveBeenCalled();
-
-    // Simulate video ending (isSpeaking → false triggers drain)
-    drainPendingTTS();
-
-    // Now the remainder should have been fed through the sentence buffer
-    expect(onSentence).toHaveBeenCalled();
-    const allText = onSentence.mock.calls.map((c) => c[0]).join(" ");
-    expect(allText).toContain("you should try a bomber jacket");
+    expect(onSpeak).toHaveBeenCalledTimes(1);
+    const [cleanText, emotion] = onSpeak.mock.calls[0];
+    expect(cleanText).toContain("First part.");
+    expect(cleanText).toContain("Last part");
+    expect(emotion).toBe("neutral");
   });
 
-  it("scripted match with no remainder does not trigger TTS", () => {
-    const onSentence = vi.fn();
-    const { handler, drainPendingTTS } = createHandler(onSentence);
+  it("defaults unknown emotion tags to neutral", () => {
+    const onSpeak = vi.fn();
+    const { handler } = createHandler(onSpeak);
 
-    // Response IS the scripted phrase (nothing after it)
-    handler({ text: "okay here's the thing", is_chunk: false });
+    handler({ text: "[emotion:unknown] Some text.", is_chunk: false });
 
-    drainPendingTTS();
-
-    // No TTS should fire — the scripted video is the entire response
-    expect(onSentence).not.toHaveBeenCalled();
-  });
-
-  it("new message clears stale pending TTS from previous scripted match", () => {
-    const onSentence = vi.fn();
-    const { handler, drainPendingTTS } = createHandler(onSentence);
-
-    // First message: scripted match with remainder
-    handler({
-      text: "okay here's the thing, try a bomber jacket.",
-      is_chunk: false,
-    });
-    expect(onSentence).not.toHaveBeenCalled();
-
-    // Second message arrives before video ends — clears stale pending TTS
-    handler({ text: "Actually never mind. Wear something else.", is_chunk: false });
-
-    // drainPendingTTS should have nothing — it was cleared by the new message
-    drainPendingTTS();
-
-    // Only the second (non-scripted) message should have gone through
-    const allText = onSentence.mock.calls.map((c) => c[0]).join(" ");
-    expect(allText).toContain("Actually never mind");
-    expect(allText).not.toContain("bomber jacket");
+    expect(onSpeak).toHaveBeenCalledWith("Some text.", "neutral");
   });
 });
