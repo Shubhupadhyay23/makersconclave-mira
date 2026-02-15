@@ -181,7 +181,7 @@ async def save_outfits_to_database(
         # Insert outfit record
         insert_outfit_query = """
             INSERT INTO session_outfits (session_id, outfit_data, clothing_items)
-            VALUES ($1, $2::jsonb, $3::uuid[])
+            VALUES ($1, $2::jsonb, $3::text[]::uuid[])
             RETURNING id
         """
         result = await db.execute(
