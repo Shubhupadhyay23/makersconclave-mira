@@ -74,6 +74,10 @@ function MirrorPage() {
   // ── Session state ──
   const [sessionActive, setSessionActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("Mira is getting ready...");
+  // Tracks whether Mira's opening speech has finished (gates STT activation)
+  const openingCompleteRef = useRef(false);
 
   // ── Pose detection + clothing overlay ──
   const [currentPose, setCurrentPose] = useState<PoseResult | null>(null);
@@ -260,6 +264,9 @@ function MirrorPage() {
       setKioskState("session");
       setSessionActive(true);
       setIsStarting(false);
+      setSessionLoading(true);
+      setLoadingMessage("Mira is getting ready...");
+      openingCompleteRef.current = false;
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
       setCarouselItems([]);
@@ -269,7 +276,7 @@ function MirrorPage() {
       setSpeechText("");
       setSpeechVisible(false);
       mira.startSession();
-      stt.startListening();
+      // STT is NOT started here — delayed until Mira's opening finishes
     };
 
     socket.on("session_active", handleSessionActive);
@@ -278,6 +285,41 @@ function MirrorPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Session data loaded (updates loading screen) ──
+  useEffect(() => {
+    const handleDataLoaded = (data: {
+      user_name?: string;
+      has_purchases?: boolean;
+      purchase_count?: number;
+    }) => {
+      if (data.has_purchases && data.purchase_count) {
+        setLoadingMessage(`Looking at your style profile...`);
+      } else {
+        setLoadingMessage("Getting to know your style...");
+      }
+    };
+
+    socket.on("session_data_loaded", handleDataLoaded);
+    return () => {
+      socket.off("session_data_loaded", handleDataLoaded);
+    };
+  }, []);
+
+  // ── Activate STT after Mira's opening speech finishes ──
+  useEffect(() => {
+    if (
+      sessionActive &&
+      !openingCompleteRef.current &&
+      !mira.isSpeaking &&
+      !sessionLoading  // loading screen already dismissed = speech has started & ended
+    ) {
+      openingCompleteRef.current = true;
+      console.log("[Mirror] Opening speech complete — activating STT");
+      stt.startListening();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mira.isSpeaking, sessionActive, sessionLoading]);
 
   // ── Mira speech events (sentence-level streaming) ──
   useEffect(() => {
@@ -330,14 +372,16 @@ function MirrorPage() {
         return;
       }
 
-      // Fallback session detection
+      // Fallback session detection (STT is delayed — started after opening finishes)
       if (!sessionActive && !isStarting) {
         setKioskState("session");
         setSessionActive(true);
         setIsStarting(false);
         mira.startSession();
-        stt.startListening();
       }
+
+      // Dismiss loading screen on first speech chunk
+      setSessionLoading(false);
 
       if (data.is_chunk !== false) {
         // ── Streaming chunk ──
@@ -490,6 +534,7 @@ function MirrorPage() {
     }) => {
       stt.stopListening();
       setSessionActive(false);
+      setSessionLoading(false);
       setCanvasOutfits([]);
       setCanvasOutfitIndex(0);
       setCarouselItems([]);
@@ -1017,6 +1062,46 @@ function MirrorPage() {
         </div>
       )}
 
+      {/* === LOADING STATE === */}
+      {sessionActive && sessionLoading && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 20,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "#000",
+          }}
+        >
+          <div style={{ marginBottom: 32 }}>
+            <MiraVideoAvatar
+              emotion="idle"
+              state="idle"
+              size={200}
+            />
+          </div>
+          <p
+            style={{
+              color: "rgba(255,255,255,0.7)",
+              fontSize: "1.3rem",
+              fontWeight: 500,
+              animation: "pulse 2s ease-in-out infinite",
+            }}
+          >
+            {loadingMessage}
+          </p>
+          <style>{`
+            @keyframes pulse {
+              0%, 100% { opacity: 0.7; }
+              50% { opacity: 1; }
+            }
+          `}</style>
+        </div>
+      )}
+
       {/* === SESSION STATE === */}
 
       {/* Clothing overlay canvas (z-5) with like/dislike animation */}
@@ -1193,6 +1278,38 @@ function MirrorPage() {
           ))}
         </div>
       )}
+
+      {/* Persistent QR code (z-30, bottom-left corner, always visible) */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 24,
+          left: 24,
+          zIndex: 30,
+          background: "rgba(255, 255, 255, 0.95)",
+          borderRadius: 12,
+          padding: 12,
+          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+        }}
+      >
+        <QRCodeSVG
+          value={PHONE_URL}
+          size={100}
+          level="M"
+          includeMargin={false}
+        />
+        <p
+          style={{
+            margin: "8px 0 0 0",
+            fontSize: "0.7rem",
+            color: "#666",
+            textAlign: "center",
+            fontWeight: 500,
+          }}
+        >
+          Scan to join
+        </p>
+      </div>
     </main>
   );
 }
