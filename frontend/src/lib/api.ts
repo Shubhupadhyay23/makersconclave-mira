@@ -216,6 +216,12 @@ export function forceEndSession() {
   });
 }
 
+export function clearQueue() {
+  return request<{ status: string }>("/admin/clear-queue", {
+    method: "POST",
+  });
+}
+
 // --- STT Config APIs ---
 
 export interface STTConfig {

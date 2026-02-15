@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
+
+const POKE_RECIPE_URL = process.env.NEXT_PUBLIC_POKE_RECIPE_URL;
 
 interface SessionRecapProps {
   summary?: string;
@@ -206,16 +209,58 @@ export default function SessionRecap({
         </div>
       )}
 
-      {/* Footer text */}
-      <p
-        style={{
-          color: "rgba(255, 255, 255, 0.4)",
-          fontSize: "0.9rem",
-          marginBottom: 24,
-        }}
-      >
-        Your picks have been saved. Check your phone for links.
-      </p>
+      {/* Poke QR code */}
+      {POKE_RECIPE_URL && (
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <p
+            style={{
+              color: "rgba(255, 255, 255, 0.5)",
+              fontSize: "0.85rem",
+              textTransform: "uppercase",
+              letterSpacing: "0.1em",
+              marginBottom: 12,
+            }}
+          >
+            Continue on Poke
+          </p>
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 12,
+              padding: 12,
+              display: "inline-block",
+            }}
+          >
+            <QRCodeSVG
+              value={POKE_RECIPE_URL}
+              size={120}
+              level="M"
+              includeMargin={false}
+            />
+          </div>
+          <p
+            style={{
+              color: "rgba(255, 255, 255, 0.35)",
+              fontSize: "0.75rem",
+              marginTop: 8,
+            }}
+          >
+            Scan to keep shopping with your AI stylist
+          </p>
+        </div>
+      )}
+
+      {!POKE_RECIPE_URL && (
+        <p
+          style={{
+            color: "rgba(255, 255, 255, 0.4)",
+            fontSize: "0.9rem",
+            marginBottom: 24,
+          }}
+        >
+          Your picks have been saved. Check your phone for links.
+        </p>
+      )}
 
       {/* Progress bar */}
       <div

@@ -453,22 +453,9 @@ async def end_session(sid, data):
     await _auto_advance_queue(user_id)
 
 
-@sio.event
-async def session_force_end(sid, data):
-    """Force-end session triggered by admin."""
-    user_id = data.get("user_id")
-    if not user_id:
-        return
-    print(f"[mira] Force-ending session for user {user_id}")
-    result = await mira.end_session(user_id)
-    if result:
-        await sio.emit("session_recap", result, room=user_id)
-        await sio.emit("session_ended", result, room=user_id)
-    await _auto_advance_queue(user_id)
-
-
 async def _auto_advance_queue(user_id: str):
     """Complete the active queue user and advance the next one."""
+    from routers.queue import _try_advance_next, get_queue_snapshot
     from models.database import NeonHTTPClient
     db = NeonHTTPClient()
     try:
@@ -476,49 +463,10 @@ async def _auto_advance_queue(user_id: str):
             "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
             [user_id],
         )
-        # Advance next waiting user
-        next_rows = await db.execute(
-            """
-            UPDATE queue SET status = 'active'
-            WHERE id = (
-                SELECT id FROM queue WHERE status = 'waiting'
-                ORDER BY position ASC LIMIT 1
-            )
-            RETURNING user_id
-            """,
-        )
-        # Build and emit queue snapshot
-        active_rows = await db.execute(
-            """
-            SELECT q.user_id, u.name FROM queue q
-            JOIN users u ON u.id = q.user_id
-            WHERE q.status = 'active' LIMIT 1
-            """,
-        )
-        active_user = None
-        if active_rows:
-            active_user = {"id": str(active_rows[0]["user_id"]), "name": active_rows[0]["name"]}
-
-        queue_rows = await db.execute(
-            """
-            SELECT q.id, q.user_id, u.name, q.position, q.status
-            FROM queue q JOIN users u ON u.id = q.user_id
-            WHERE q.status IN ('waiting', 'active')
-            ORDER BY q.position
-            """,
-        )
-        queue_list = [
-            {
-                "id": str(r["id"]),
-                "user_id": str(r["user_id"]),
-                "name": r["name"],
-                "position": r["position"],
-                "status": r["status"],
-            }
-            for r in (queue_rows or [])
-        ]
-        await sio.emit("queue_updated", {"active_user": active_user, "queue": queue_list}, room="mirror")
-        print(f"[queue] Advanced queue. Active: {active_user}")
+        await _try_advance_next(db)
+        snapshot = await get_queue_snapshot(db)
+        await sio.emit("queue_updated", snapshot, room="mirror")
+        print(f"[queue] Advanced queue. Active: {snapshot.get('active_user')}")
     finally:
         await db.close()
 

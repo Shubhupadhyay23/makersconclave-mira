@@ -100,7 +100,7 @@ async def join_queue(body: QueueJoinRequest, request: Request):
 
         # Calculate next position
         max_pos = await db.fetchval(
-            "SELECT COALESCE(MAX(position), 0) FROM queue"
+            "SELECT COALESCE(MAX(position), 0) FROM queue WHERE status IN ('waiting', 'active')"
         )
         next_position = int(max_pos) + 1
 

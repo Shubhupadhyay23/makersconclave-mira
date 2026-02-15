@@ -196,8 +196,11 @@ async def get_booth_stats():
 
 @router.post("/force-end")
 async def force_end_session(request: Request):
-    """Force-end the current active session."""
+    """Force-end the current active session with full server-side cleanup."""
+    from routers.queue import _try_advance_next, get_queue_snapshot
+
     sio = request.app.state.sio
+    mira = request.app.state.mira
     db = NeonHTTPClient()
     try:
         active_rows = await db.execute(
@@ -210,9 +213,72 @@ async def force_end_session(request: Request):
             return {"status": "no_active_session"}
 
         user_id = str(active_rows[0]["user_id"])
+
+        # End Mira orchestrator session (may fail if no session running — that's OK)
+        recap_data = None
+        try:
+            recap_data = await mira.end_session(user_id)
+        except Exception as e:
+            print(f"[admin] mira.end_session failed for {user_id}: {e}")
+
+        # Mark queue entry as completed
+        await db.execute(
+            "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
+            [user_id],
+        )
+
+        # Advance queue to next waiting user
+        await _try_advance_next(db)
+
+        # Emit force-end to mirror + user for UI cleanup
         await sio.emit("session_force_end", {"user_id": user_id}, room="mirror")
         await sio.emit("session_force_end", {"user_id": user_id}, room=user_id)
 
+        # Emit session_ended with recap data so the phone transitions
+        await sio.emit("session_ended", recap_data or {}, room=user_id)
+
+        # Broadcast updated queue snapshot to mirror
+        snapshot = await get_queue_snapshot(db)
+        await sio.emit("queue_updated", snapshot, room="mirror")
+
         return {"status": "force_ended", "user_id": user_id}
+    finally:
+        await db.close()
+
+
+@router.post("/clear-queue")
+async def clear_queue(request: Request):
+    """Clear all active and waiting queue entries. Emergency reset."""
+    from routers.queue import get_queue_snapshot
+
+    sio = request.app.state.sio
+    mira = request.app.state.mira
+    db = NeonHTTPClient()
+    try:
+        # Find all active users to end their Mira sessions
+        active_rows = await db.execute(
+            "SELECT user_id FROM queue WHERE status = 'active'",
+        )
+        for row in (active_rows or []):
+            uid = str(row["user_id"])
+            try:
+                await mira.end_session(uid)
+            except Exception as e:
+                print(f"[admin] clear-queue: mira.end_session failed for {uid}: {e}")
+            # Notify the user's phone
+            await sio.emit("session_force_end", {"user_id": uid}, room=uid)
+            await sio.emit("session_ended", {}, room=uid)
+
+        # Mark all waiting/active entries as completed
+        await db.execute(
+            "UPDATE queue SET status = 'completed' WHERE status IN ('waiting', 'active')",
+        )
+
+        # Broadcast empty queue snapshot to mirror
+        snapshot = await get_queue_snapshot(db)
+        await sio.emit("queue_updated", snapshot, room="mirror")
+        await sio.emit("session_force_end", {}, room="mirror")
+
+        return {"status": "cleared"}
     finally:
         await db.close()

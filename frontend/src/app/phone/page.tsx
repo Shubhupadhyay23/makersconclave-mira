@@ -453,14 +453,30 @@ function RecapView({
         )}
       </div>
 
-      <a
-        href="#"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-blue-600 underline text-sm"
-      >
-        View on Poke
-      </a>
+      {process.env.NEXT_PUBLIC_POKE_RECIPE_URL && (
+        <a
+          href={process.env.NEXT_PUBLIC_POKE_RECIPE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "block",
+            width: "100%",
+            maxWidth: "24rem",
+            padding: "14px 24px",
+            fontSize: 16,
+            fontWeight: 600,
+            color: "#fff",
+            background: "#5B4FE9",
+            border: "none",
+            borderRadius: 12,
+            textAlign: "center",
+            textDecoration: "none",
+            boxSizing: "border-box",
+          }}
+        >
+          Continue on Poke
+        </a>
+      )}
 
       <button
         onClick={onDone}

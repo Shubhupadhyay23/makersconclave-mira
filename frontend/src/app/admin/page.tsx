@@ -9,6 +9,7 @@ import {
   updateSTTConfig,
   skipQueueUser,
   forceEndSession,
+  clearQueue,
   startMirrorSession,
   advanceQueue,
   type AdminQueueEntry,
@@ -77,6 +78,12 @@ export default function AdminPage() {
     refresh();
   }, [refresh]);
 
+  const handleClearQueue = useCallback(async () => {
+    if (!confirm("Clear entire queue? This will end all active sessions.")) return;
+    await clearQueue();
+    refresh();
+  }, [refresh]);
+
   if (loading) {
     return (
       <main className="min-h-screen bg-zinc-50 flex items-center justify-center">
@@ -93,12 +100,20 @@ export default function AdminPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-2xl font-bold">Mirrorless Admin</h1>
-          <button
-            onClick={refresh}
-            className="text-sm text-zinc-500 hover:text-zinc-900 underline"
-          >
-            Refresh
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleClearQueue}
+              className="text-sm bg-red-100 text-red-700 px-3 py-1.5 rounded-lg font-medium hover:bg-red-200"
+            >
+              Clear Queue
+            </button>
+            <button
+              onClick={refresh}
+              className="text-sm text-zinc-500 hover:text-zinc-900 underline"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
 
         {/* Booth Stats */}
