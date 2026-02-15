@@ -2,12 +2,10 @@
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import type { PoseResult } from '@/types/pose';
-import type { ClothingItem, ClothingAnchorPoints } from '@/types/clothing';
+import type { ClothingItem } from '@/types/clothing';
 import { getClothingQuad } from '../lib/clothing-transform';
-import { detectShoulderSeams, calculateUniformScale, type ShoulderAnchors } from '@/lib/shoulder-seam-detection';
+import { detectShoulderSeams, type ShoulderAnchors } from '@/lib/shoulder-seam-detection';
 import { detectWaistband, type WaistbandAnchors } from '@/lib/waistband-detection';
-import { POSE_LANDMARKS } from '@/types/pose';
-import { landmarkToPixel } from '../lib/clothing-transform';
 
 interface ClothingCanvasProps {
   pose: PoseResult | null;
@@ -234,9 +232,9 @@ export function ClothingCanvas({
         continue;
       }
 
-      // Use precise anchor-based alignment if shoulder anchors detected
+      // Use shoulder seam detection for tops
       if (item.category === 'tops' && shoulderAnchors) {
-        // Goal: Map shoulder seams → body shoulders, hem → body hips
+        // Map shoulder seams → body shoulders, hem → body hips
 
         // Shirt anchor points in image (normalized 0-1, convert to pixels)
         const shirtLeftShoulder = {
@@ -256,11 +254,11 @@ export function ClothingCanvas({
           y: shoulderAnchors.rightHem.y * img.height,
         };
 
-        // Body landmarks (already in canvas pixels)
-        const bodyLeftShoulder = quad.topLeft;    // MediaPipe left shoulder
-        const bodyRightShoulder = quad.topRight;   // MediaPipe right shoulder
-        const bodyLeftHip = quad.bottomLeft;       // MediaPipe left hip
-        const bodyRightHip = quad.bottomRight;     // MediaPipe right hip
+        // Body landmarks
+        const bodyLeftShoulder = quad.topLeft;
+        const bodyRightShoulder = quad.topRight;
+        const bodyLeftHip = quad.bottomLeft;
+        const bodyRightHip = quad.bottomRight;
 
         // Calculate shirt measurements
         const shirtShoulderWidth = Math.hypot(
@@ -285,43 +283,36 @@ export function ClothingCanvas({
         // Calculate scale factors
         const scaleX = bodyShoulderWidth / shirtShoulderWidth;
         const scaleY = bodyTorsoHeight / shirtTorsoHeight;
-        const scale = (scaleX + scaleY) / 2; // Average for aspect ratio
+        const scale = (scaleX + scaleY) / 2;
 
-        // Calculate where the shirt's anchor center maps to body center
-        // Shirt anchor quad center
+        // Calculate anchor quad centers
         const shirtAnchorCenterX = (shirtLeftShoulder.x + shirtRightShoulder.x + shirtLeftHem.x + shirtRightHem.x) / 4;
         const shirtAnchorCenterY = (shirtLeftShoulder.y + shirtRightShoulder.y + shirtLeftHem.y + shirtRightHem.y) / 4;
 
-        // Body quad center
         const bodyCenterX = (bodyLeftShoulder.x + bodyRightShoulder.x + bodyLeftHip.x + bodyRightHip.x) / 4;
         const bodyCenterY = (bodyLeftShoulder.y + bodyRightShoulder.y + bodyLeftHip.y + bodyRightHip.y) / 4;
 
-        // Calculate image center
         const imgCenterX = img.width / 2;
         const imgCenterY = img.height / 2;
 
-        // Offset from image center to shirt anchor center (scaled)
         const offsetX = (shirtAnchorCenterX - imgCenterX) * scale;
         const offsetY = (shirtAnchorCenterY - imgCenterY) * scale;
 
-        // Final position: body center minus the offset
         const finalCenterX = bodyCenterX - offsetX;
         const finalCenterY = bodyCenterY - offsetY;
 
-        // Calculate rotation from body shoulder line
         const rotation = Math.atan2(
           bodyRightShoulder.y - bodyLeftShoulder.y,
           bodyRightShoulder.x - bodyLeftShoulder.x
-        ) + Math.PI; // Flip 180 degrees
+        ) + Math.PI;
 
-        // Render full shirt
         const renderWidth = img.width * scale;
         const renderHeight = img.height * scale;
 
         ctx.save();
         ctx.translate(finalCenterX, finalCenterY);
         ctx.rotate(rotation);
-        ctx.scale(-1, 1); // Flip horizontally to match mirrored camera
+        ctx.scale(-1, 1);
         ctx.globalAlpha = 1.0;
 
         ctx.drawImage(
@@ -383,7 +374,7 @@ export function ClothingCanvas({
         // Calculate scale
         const scaleX = bodyWidth / srcWidth;
         const scaleY = bodyHeight / srcHeight;
-        const scale = Math.min(scaleX, scaleY);
+        const scale = Math.min(scaleX, scaleY) * 1.1; // Expand by 10%
 
         // Render dimensions
         const renderWidth = srcWidth * scale;

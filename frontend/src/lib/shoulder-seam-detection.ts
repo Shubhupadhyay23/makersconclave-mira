@@ -18,7 +18,6 @@ export interface ShoulderAnchors {
  * Detects where colored pixels significantly widen (sleeve separation)
  */
 export function detectShoulderSeams(image: HTMLImageElement): ShoulderAnchors | null {
-  // Create canvas
   const canvas = document.createElement('canvas');
   canvas.width = image.width;
   canvas.height = image.height;
@@ -49,7 +48,7 @@ export function detectShoulderSeams(image: HTMLImageElement): ShoulderAnchors | 
     for (let x = 0; x < canvas.width; x++) {
       const alpha = pixels[(y * canvas.width + x) * 4 + 3];
 
-      if (alpha > 10) { // Visible pixel
+      if (alpha > 10) {
         pixelCount++;
         if (x < leftmost) leftmost = x;
         if (x > rightmost) rightmost = x;
@@ -72,11 +71,7 @@ export function detectShoulderSeams(image: HTMLImageElement): ShoulderAnchors | 
     return null;
   }
 
-  // Find the top of the garment (first row with pixels)
   const neckY = rows[0].y;
-
-  // Analyze width changes to find shoulder seam
-  // The shoulder seam is where width increases significantly (sleeves start)
 
   // Calculate moving average of width to smooth out noise
   const windowSize = 5;
@@ -92,8 +87,7 @@ export function detectShoulderSeams(image: HTMLImageElement): ShoulderAnchors | 
     };
   });
 
-  // Find where width increases most significantly
-  // This is the shoulder seam (where sleeves separate from torso)
+  // Find where width increases most significantly (shoulder seam)
   let maxWidthIncrease = 0;
   let shoulderRowIndex = 0;
 
@@ -115,12 +109,8 @@ export function detectShoulderSeams(image: HTMLImageElement): ShoulderAnchors | 
     return null;
   }
 
-  console.log('[ShoulderSeam] Detected shoulder at row', shoulderRow.y, 'width increase:', maxWidthIncrease);
-
-  // Find the bottom hem (last row with pixels)
   const hemRow = rows[rows.length - 1];
 
-  // Shoulder anchor points are at the edges of the shoulder seam row
   const leftShoulder = {
     x: shoulderRow.leftmost / canvas.width,
     y: shoulderRow.y / canvas.height,
@@ -131,7 +121,6 @@ export function detectShoulderSeams(image: HTMLImageElement): ShoulderAnchors | 
     y: shoulderRow.y / canvas.height,
   };
 
-  // Hem anchor points are at the edges of the bottom row
   const leftHem = {
     x: hemRow.leftmost / canvas.width,
     y: hemRow.y / canvas.height,
