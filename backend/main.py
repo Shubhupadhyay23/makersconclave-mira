@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import socketio
 
-from routers import auth, queue, users, heygen
+from routers import auth, queue, users, tts
 from scraper.routes import router as scraper_router
 from judges.routes import router as judges_router
 from agent.orchestrator import MiraOrchestrator, generate_outfit_recommendations, update_outfit_reaction, _outfits_to_display_payloads
@@ -34,7 +34,7 @@ app.include_router(queue.router)
 app.include_router(users.router)
 app.include_router(scraper_router)
 app.include_router(judges_router)
-app.include_router(heygen.router)
+app.include_router(tts.router)
 
 # Make sio and Mira accessible to routes
 app.state.sio = sio
@@ -204,6 +204,11 @@ async def mirror_event(sid, data):
     event = data.get("event", {})
     if not user_id or not event:
         return
+    event_type = event.get("type", "unknown")
+    if event_type == "voice":
+        print(f"[socket] mirror_event voice from {user_id}: {event.get('transcript', '')[:120]}")
+    else:
+        print(f"[socket] mirror_event {event_type} from {user_id}")
     try:
         await mira.handle_event(user_id, event)
     except Exception as e:

@@ -5,8 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useCamera } from "@/hooks/useCamera";
 import { useGestureRecognizer } from "@/hooks/useGestureRecognizer";
-import { usePoseDetection } from "@/hooks/usePoseDetection";
-import { useLiveAvatar } from "@/hooks/useLiveAvatar";
+import { useMemojiAvatar } from "@/hooks/useMemojiAvatar";
 import { useDeepgramSTT } from "@/hooks/useDeepgramSTT";
 import { GestureIndicator } from "@/components/mirror/GestureIndicator";
 import { ClothingCanvas } from "@/components/mirror/ClothingCanvas";
@@ -14,6 +13,7 @@ import AvatarPiP from "@/components/mirror/AvatarPiP";
 import VoiceIndicator from "@/components/mirror/VoiceIndicator";
 import PriceStrip, { type PriceStripItem } from "@/components/mirror/PriceStrip";
 import { SentenceBuffer } from "@/lib/sentence-buffer";
+import { findScriptedResponse, detectEmotion } from "@/lib/scripted-responses";
 import { socket } from "@/lib/socket";
 import type { DetectedGesture, GestureType } from "@/types/gestures";
 import type { PoseResult } from "@/types/pose";
@@ -57,19 +57,24 @@ function MirrorPage() {
   const activePriceItems = canvasOutfits[canvasOutfitIndex]?.productInfo ?? [];
 
   // Avatar + voice
-  const avatar = useLiveAvatar();
+  const avatar = useMemojiAvatar();
   const stt = useDeepgramSTT();
 
   // Queue transcripts while avatar is speaking, send when quiet
   const pendingTranscriptRef = useRef<string | null>(null);
 
-  // Sentence buffer: accumulates streamed speech chunks → fires complete sentences to avatar
+  // Accumulate full response text before deciding delivery method
+  const responseAccumulatorRef = useRef<string>("");
+
+  // Stash remaining text after a scripted video; drained when video ends
+  const pendingTTSAfterScriptedRef = useRef<string | null>(null);
+
+  // Sentence buffer: used for non-scripted responses (TTS path)
   const sentenceBuffer = useMemo(
     () =>
       new SentenceBuffer((sentence) => {
         avatar.speak(sentence);
       }),
-    // avatar.speak is stable (useCallback), safe to depend on
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [avatar.speak],
   );
@@ -113,14 +118,13 @@ function MirrorPage() {
     return () => {
       socket.off("session_active", handleSessionActive);
     };
-    // avatar.startSession and stt.startListening are stable refs
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Listen for mira_speech events (streamed text from AI)
   useEffect(() => {
     const handleSpeech = (data: { text?: string; is_chunk?: boolean }) => {
-      // Fallback session detection: if we get speech before session_active
+      // Fallback session detection
       if (!sessionActive && !isStarting) {
         setSessionActive(true);
         setIsStarting(false);
@@ -128,13 +132,47 @@ function MirrorPage() {
         stt.startListening();
       }
 
-      if (data.text) {
-        if (data.is_chunk === false) {
-          // End of message — flush remaining buffer
-          sentenceBuffer.feed(data.text);
-          sentenceBuffer.flush();
+      if (data.is_chunk !== false) {
+        // Still accumulating — skip empty chunks
+        if (!data.text) return;
+        console.log("[Mirror] mira_speech chunk received");
+        responseAccumulatorRef.current += data.text;
+        avatar.setAvatarState("thinking");
+      } else {
+        // New complete message arrived — discard any stale pending TTS
+        pendingTTSAfterScriptedRef.current = null;
+        // End of message — accumulate any final text, then deliver
+        if (data.text) {
+          responseAccumulatorRef.current += data.text;
+        }
+        const fullText = responseAccumulatorRef.current;
+        responseAccumulatorRef.current = "";
+        console.log("[Mirror] Agent full response:", fullText);
+        if (!fullText) return;
+
+        // Check for scripted response match
+        const scripted = findScriptedResponse(fullText);
+
+        if (scripted) {
+          // Play pre-recorded video, then TTS any remaining text
+          console.log("[Mirror] Scripted match:", scripted.phrase);
+          const phraseIdx = fullText.toLowerCase().indexOf(scripted.phrase);
+          const afterPhrase = phraseIdx >= 0
+            ? fullText.slice(phraseIdx + scripted.phrase.length).trim()
+            : "";
+          if (afterPhrase) {
+            pendingTTSAfterScriptedRef.current = afterPhrase;
+            console.log("[Mirror] Pending TTS after scripted:", afterPhrase.slice(0, 80));
+          }
+          avatar.playScripted(scripted.video);
         } else {
-          sentenceBuffer.feed(data.text);
+          // No match — detect emotion for avatar state, then TTS per sentence
+          const emotion = detectEmotion(fullText);
+          avatar.setAvatarState(emotion);
+
+          // Feed full text through sentence buffer for per-sentence TTS
+          sentenceBuffer.feed(fullText);
+          sentenceBuffer.flush();
         }
       }
     };
@@ -208,9 +246,23 @@ function MirrorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Drain pending TTS text after a scripted video finishes playing
+  useEffect(() => {
+    if (!avatar.isSpeaking && pendingTTSAfterScriptedRef.current) {
+      const text = pendingTTSAfterScriptedRef.current;
+      pendingTTSAfterScriptedRef.current = null;
+      console.log("[Mirror] Draining pending TTS after scripted:", text.slice(0, 80));
+      const emotion = detectEmotion(text);
+      avatar.setAvatarState(emotion);
+      sentenceBuffer.feed(text);
+      sentenceBuffer.flush();
+    }
+  }, [avatar.isSpeaking, avatar.setAvatarState, sentenceBuffer]);
+
   // Send transcripts to backend when avatar stops speaking
   useEffect(() => {
     if (!avatar.isSpeaking && pendingTranscriptRef.current && userId) {
+      console.log("[Mirror] Flushing queued transcript:", pendingTranscriptRef.current);
       socket.emit("mirror_event", {
         user_id: userId,
         event: { type: "voice", transcript: pendingTranscriptRef.current },
@@ -224,9 +276,10 @@ function MirrorPage() {
     if (!stt.transcript || !userId) return;
 
     if (avatar.isSpeaking) {
-      // Queue transcript until avatar is done speaking to avoid interruption
+      console.log("[Mirror] Queuing transcript (avatar speaking):", stt.transcript);
       pendingTranscriptRef.current = stt.transcript;
     } else {
+      console.log("[Mirror] Sending transcript to backend:", stt.transcript);
       socket.emit("mirror_event", {
         user_id: userId,
         event: { type: "voice", transcript: stt.transcript },
@@ -305,8 +358,7 @@ function MirrorPage() {
   const handleStartSession = useCallback(() => {
     if (!userId || isStarting || sessionActive) return;
 
-    // Unlock browser audio policy while we still have the user gesture context.
-    // When session.attach() later calls play(), the browser will allow it.
+    // Unlock browser audio policy while we still have the user gesture context
     const ctx = new AudioContext();
     ctx.resume().then(() => ctx.close());
 
@@ -411,10 +463,8 @@ function MirrorPage() {
         </div>
       )}
 
-      {/* Avatar PiP (top-right, session only) */}
-      {sessionActive && (
-        <AvatarPiP videoRef={avatar.avatarRef} isReady={avatar.isReady} />
-      )}
+      {/* Avatar PiP (top-right, always mounted so ref stays alive) */}
+      <AvatarPiP containerRef={avatar.containerRef} isReady={avatar.isReady} visible={sessionActive} />
 
       {/* Gesture visual feedback */}
       <GestureIndicator key={gestureKey} gesture={lastGesture} />
@@ -459,6 +509,7 @@ function MirrorPage() {
             color: "#fff",
             fontSize: "1.5rem",
             zIndex: 30,
+            pointerEvents: "none",
           }}
         >
           Loading gesture recognition...
