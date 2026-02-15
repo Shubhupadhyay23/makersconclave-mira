@@ -70,6 +70,28 @@ Mira's voice flows through a streaming pipeline from Claude's output to audio pl
 - `queue_updated` Socket.io event broadcasts to mirror room on every queue change
 - Mirror receives queue snapshot on connect (handles late-join scenario)
 
+## Poke MCP Server
+
+Poke (external AI agent) accesses mirror session data via an MCP server in `backend/mcp_server/`.
+
+**Architecture:** Poke → MCP protocol → FastMCP server → asyncpg → Neon Postgres (direct DB, not through FastAPI).
+
+**Tools:**
+- `get_past_sessions(phone, limit)` — Look up user by phone, return past sessions with liked items (full product details: name, brand, price, image_url, buy_url) and session summaries
+- `save_session(phone, session_id, summary)` — Add a summary to an existing session (sessions are created by the mirror backend during live sessions)
+
+**Running the MCP server:**
+```
+cd backend
+python -m mcp_server.server
+```
+
+**Testing:**
+```
+cd backend
+pytest mcp_server/tests/ -v
+```
+
 ## Build & Run Commands
 
 ### Frontend (Next.js)
@@ -147,7 +169,9 @@ backend/            # Python FastAPI
     admin.py        # Admin dashboard routes (queue view, session info, stats, force-end)
     users.py        # User routes
   scraper/          # Gmail scraping, data extraction
-  mcp_server/       # MCP server for Poke integration (not mcp/ — avoids PyPI conflict)
+  mcp_server/       # Poke MCP server — session history tools (direct DB access)
+    server.py       # FastMCP server: get_past_sessions + save_session
+    tests/          # Pytest suite for session tools + MCP protocol
   models/           # Pydantic models, DB schemas
     database.py     # Dual-mode DB connection (asyncpg + Neon HTTP)
     schemas.py      # Pydantic request/response models
@@ -209,7 +233,7 @@ Or use the Neon SQL Editor in the dashboard, or the Neon MCP `run_sql` tool.
 - Deepgram streaming STT (`useDeepgramSTT` hook)
 - Emotion parsing with `[emotion:X]` tags + `detectEmotionFromText` fallback
 - Mirror UI components: VideoAvatar, ClothingCanvas, PriceStrip, VoiceIndicator, GestureIndicator
-- MCP server for Poke integration (`backend/mcp_server/`)
+- Poke MCP server — session history tools for external AI agent (`backend/mcp_server/`)
 - Selfie capture during onboarding
 - rembg background removal for clothing flat lays
 - Google OAuth sign-in
