@@ -109,8 +109,7 @@ function calculateTopTransform(
   const height = scale;
 
   // Calculate rotation from shoulder line
-  // Add PI to flip 180 degrees (clothing images are typically oriented top-down)
-  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x) + Math.PI;
+  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x);
 
   return {
     centerX,
@@ -161,8 +160,7 @@ function calculateBottomTransform(
   const height = scale;
 
   // Calculate rotation from hip line
-  // Add PI to flip 180 degrees (clothing images are typically oriented top-down)
-  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x) + Math.PI;
+  const rotation = Math.atan2(trPx.y - tlPx.y, trPx.x - tlPx.x);
 
   return {
     centerX,

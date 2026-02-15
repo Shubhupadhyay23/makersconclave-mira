@@ -104,7 +104,7 @@ export function usePoseDetection({
         if (result.landmarks && result.landmarks.length > 0) {
           onPoseUpdateRef.current({
             landmarks: result.landmarks[0].map((lm) => ({
-              x: lm.x,
+              x: 1 - lm.x,
               y: lm.y,
               z: lm.z,
               visibility: lm.visibility ?? 0,

@@ -312,7 +312,7 @@ export function ClothingCanvas({
         const rotation = Math.atan2(
           bodyRightShoulder.y - bodyLeftShoulder.y,
           bodyRightShoulder.x - bodyLeftShoulder.x
-        ) + Math.PI;
+        );
 
         const renderWidth = img.width * scale;
         const renderHeight = img.height * scale;
@@ -320,7 +320,6 @@ export function ClothingCanvas({
         ctx.save();
         ctx.translate(finalCenterX, finalCenterY);
         ctx.rotate(rotation);
-        ctx.scale(-1, 1);
         ctx.globalAlpha = opacity;
 
         ctx.drawImage(
@@ -381,12 +380,11 @@ export function ClothingCanvas({
         const rotation = Math.atan2(
           bodyRightHip.y - bodyLeftHip.y,
           bodyRightHip.x - bodyLeftHip.x
-        ) + Math.PI;
+        );
 
         ctx.save();
         ctx.translate(bodyCenterX, bodyCenterY);
         ctx.rotate(rotation);
-        ctx.scale(-1, 1);
         ctx.globalAlpha = opacity;
 
         ctx.drawImage(
@@ -431,7 +429,7 @@ export function ClothingCanvas({
         const rotation = Math.atan2(
           quad.topRight.y - quad.topLeft.y,
           quad.topRight.x - quad.topLeft.x
-        ) + Math.PI;
+        );
 
         ctx.save();
         ctx.translate(centerX, centerY);
