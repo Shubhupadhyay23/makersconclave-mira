@@ -842,6 +842,11 @@ function MirrorPage() {
     skipQueueUser(activeUser.id).catch(() => {});
   }, [activeUser]);
 
+  const handleEndSession = useCallback(() => {
+    if (!userId) return;
+    socket.emit("end_session", { user_id: userId });
+  }, [userId]);
+
   // ── Carousel gesture callback ──
   const handleCarouselGesture = useCallback(
     (gesture: GestureType, item: ProductCard) => {
@@ -1046,6 +1051,40 @@ function MirrorPage() {
           visible={debugMode}
         />
       </div>
+
+      {/* End Session button (z-10, top-left corner, subdued ghost style) */}
+      {sessionActive && (
+        <button
+          onClick={handleEndSession}
+          style={{
+            position: "absolute",
+            top: 24,
+            left: 24,
+            zIndex: 10,
+            padding: "8px 16px",
+            fontSize: "0.85rem",
+            fontWeight: 500,
+            color: "rgba(255, 255, 255, 0.4)",
+            background: "rgba(255, 255, 255, 0.08)",
+            border: "1px solid rgba(255, 255, 255, 0.15)",
+            borderRadius: 8,
+            cursor: "pointer",
+            transition: "all 200ms ease",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "rgba(255, 255, 255, 0.9)";
+            e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)";
+            e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.3)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "rgba(255, 255, 255, 0.4)";
+            e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+            e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.15)";
+          }}
+        >
+          End Session
+        </button>
+      )}
 
       {/* Mira Video Avatar (z-10, top-right corner) */}
       {sessionActive && (

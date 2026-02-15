@@ -228,6 +228,19 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "end_session",
+        "description": (
+            "End the current styling session. Call this when the user says goodbye, "
+            "they're done, or the conversation reaches a natural stopping point. "
+            "Say your goodbye/wrap-up line BEFORE calling this tool in the same response."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "give_recommendation",
         "description": (
             "Search for clothing items from specific brands to build outfit recommendations. "

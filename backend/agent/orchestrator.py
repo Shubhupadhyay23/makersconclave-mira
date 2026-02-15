@@ -694,6 +694,17 @@ class MiraOrchestrator:
 
         # Safety net: estimate tokens and trigger emergency compaction if needed
         estimated_tokens = self._estimate_history_tokens(session)
+
+        # Diagnostic: show history breakdown
+        print(f"[mira] History breakdown for {session.user_id}:")
+        print(f"  - Total messages: {len(session.conversation_history)}")
+        print(f"  - System prompt: {len(session.system_prompt):,} chars (~{len(session.system_prompt) // 4:,} tokens)")
+        for idx, msg in enumerate(session.conversation_history):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            chars = self._count_chars_recursive(content)
+            print(f"  - Msg {idx} ({role}): {chars:,} chars (~{chars // 4:,} tokens)")
+
         print(f"[mira] Estimated history tokens: {estimated_tokens:,} for {session.user_id}")
         if estimated_tokens > 120_000:
             print(f"[mira] Emergency compaction triggered ({estimated_tokens:,} > 120,000)")
@@ -812,6 +823,7 @@ class MiraOrchestrator:
     async def _handle_tool_calls(self, session: SessionState, tool_uses: list, tool_depth: int = 0) -> None:
         """Execute tool calls and continue the conversation."""
         tool_results = []
+        session_ending = False
 
         for tool_use in tool_uses:
             # Log tool call with truncated input for terminal visibility
@@ -831,6 +843,17 @@ class MiraOrchestrator:
                 }
                 tool_results.append(tool_result_block)
                 continue
+
+            # end_session — Claude decided to end the session (user said goodbye, etc.)
+            if tool_use.name == "end_session":
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use.id,
+                    "content": "Session ended.",
+                })
+                session_ending = True
+                print(f"[mira] end_session tool called for {session.user_id}")
+                break
 
             try:
                 result = await execute_tool(
@@ -890,11 +913,18 @@ class MiraOrchestrator:
                 tool_result_block["is_error"] = True
             tool_results.append(tool_result_block)
 
-        # Add tool results to conversation and continue
+        # Add tool results to conversation history
         session.conversation_history.append({
             "role": "user",
             "content": tool_results,
         })
+
+        # If end_session was called, tear down session and advance queue — do NOT call Claude again
+        if session_ending:
+            user_id = session.user_id
+            await self.end_session(user_id)
+            await self._advance_queue(user_id)
+            return
 
         # Continue the conversation — Claude needs to process tool results
         await self._call_claude(session, tool_depth=tool_depth + 1)
@@ -1002,6 +1032,29 @@ class MiraOrchestrator:
 
         del self.sessions[user_id]
         return {"summary": summary, "liked_items": session.liked_items}
+
+    async def _advance_queue(self, user_id: str) -> None:
+        """Mark the user's queue entry as completed and advance the next user.
+
+        Best-effort — a failure here shouldn't block session teardown.
+        """
+        try:
+            from routers.queue import _try_advance_next, get_queue_snapshot
+            db = NeonHTTPClient()
+            try:
+                await db.execute(
+                    "UPDATE queue SET status = 'completed' WHERE user_id = $1::uuid AND status = 'active'",
+                    [user_id],
+                )
+                await _try_advance_next(db)
+                snapshot = await get_queue_snapshot(db)
+                if self.sio:
+                    await self.sio.emit("queue_updated", snapshot, room="mirror")
+                print(f"[mira] Queue advanced after end_session for {user_id}")
+            finally:
+                await db.close()
+        except Exception as e:
+            print(f"[mira] Failed to advance queue after end_session for {user_id}: {e}")
 
     async def _generate_summary(self, session: SessionState) -> str:
         """Ask Claude to generate a short session summary for memory."""
