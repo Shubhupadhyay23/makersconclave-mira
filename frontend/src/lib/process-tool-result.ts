@@ -30,9 +30,9 @@ export interface ProcessedToolResult {
 /**
  * Process a tool_result Socket.io event into display-ready data.
  *
- * Handles two tool result types:
+ * Handles tool result types:
  * - `display_product`: tries flat lay overlay first, falls back to ProductCarousel cards
- * - `clothing_results`: always maps to ProductCarousel cards (from present_items)
+ * - `clothing_results`: (legacy) always maps to ProductCarousel cards
  *
  * Returns null for unknown types or empty items.
  */

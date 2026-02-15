@@ -90,7 +90,7 @@ function MirrorV2Page() {
   // ── Outfit opacity for fade-in ──
   const [outfitOpacity, setOutfitOpacity] = useState(1);
 
-  // ── Product carousel (fallback when no flat lays / from present_items) ──
+  // ── Product carousel (fallback when no flat lays available) ──
   const [carouselItems, setCarouselItems] = useState<ProductCard[]>([]);
 
   // ── Debug overlay ──

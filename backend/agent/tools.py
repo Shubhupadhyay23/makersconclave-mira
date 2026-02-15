@@ -43,9 +43,10 @@ TOOL_DEFINITIONS = [
         "description": (
             "Search for clothing items using Google Shopping. Returns results to YOU only — "
             "the user does NOT see these results. Use this to gather options, then call "
-            "present_items with your curated picks (1-5 items). Write detailed queries "
-            "including gender, style keywords, and price ceiling when relevant, e.g. "
-            "'mens black minimalist sneakers under $150' or 'women oversized linen blazer summer'."
+            "display_product with your curated picks to overlay them on the user's body. "
+            "Write detailed queries including gender, style keywords, and price ceiling "
+            "when relevant, e.g. 'mens black minimalist sneakers under $150' or "
+            "'women oversized linen blazer summer'."
         ),
         "input_schema": {
             "type": "object",
@@ -172,46 +173,13 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "present_items",
-        "description": (
-            "Present curated clothing picks to the user's mirror display. This is the ONLY "
-            "way to show items to the user — search_clothing results are invisible to them. "
-            "Call this AFTER search_clothing with your top 1-5 picks. The user sees product "
-            "cards (image + price + brand); YOUR voice is the narration, so don't repeat "
-            "what's on the card."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "description": "Curated items to display (1-5). Each must include fields from search_clothing results.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "product_id": {"type": "string", "description": "Product ID from search results"},
-                            "title": {"type": "string", "description": "Product title"},
-                            "price": {"type": "string", "description": "Price string e.g. '$59.99'"},
-                            "image_url": {"type": "string", "description": "Product image URL"},
-                            "link": {"type": "string", "description": "Product buy link"},
-                            "source": {"type": "string", "description": "Retailer name"},
-                        },
-                        "required": ["title", "price", "image_url", "link", "source"],
-                    },
-                    "minItems": 1,
-                    "maxItems": 5,
-                },
-            },
-            "required": ["items"],
-        },
-    },
-    {
         "name": "display_product",
         "description": (
-            "Display recommended clothing items on the mirror. Generates flat lay product "
-            "photos and sends them to the display. Call this after selecting outfit items to "
-            "show the user. This is the preferred way to present items — it processes images "
-            "into clean flat lay format before displaying."
+            "PREFERRED tool for showing clothing on the mirror. Generates transparent flat lay "
+            "images and overlays them on the user's body in real-time — this is the smart "
+            "mirror's core feature. Use this for outfit recommendations (1-4 items). Each item "
+            "MUST include a 'type' field ('top' or 'bottom') so the mirror knows where to "
+            "place it on the body. Call this AFTER search_clothing with your curated picks."
         ),
         "input_schema": {
             "type": "object",
@@ -233,7 +201,7 @@ TOOL_DEFINITIONS = [
                                 "enum": ["top", "bottom", "shoes", "accessory"],
                             },
                         },
-                        "required": ["title", "image_url", "product_id"],
+                        "required": ["title", "image_url", "product_id", "type"],
                     },
                     "maxItems": 10,
                 },
@@ -266,7 +234,7 @@ TOOL_DEFINITIONS = [
             "Call this tool when you're ready to find tops and bottoms to recommend. "
             "Returns a categorized list of available clothing items (tops and bottoms) from the "
             "requested brands, with brand diversity ensured. After getting results, use "
-            "present_items to show your curated picks to the user."
+            "display_product to show your curated picks to the user."
         ),
         "input_schema": {
             "type": "object",
@@ -353,8 +321,6 @@ async def execute_tool(tool_name: str, tool_input: dict, user_context: dict) -> 
     """
     if tool_name == "search_clothing":
         return await _search_clothing(tool_input)
-    elif tool_name == "present_items":
-        return await _present_items(tool_input)
     elif tool_name == "search_gmail":
         return await _search_gmail(tool_input, user_context)
     elif tool_name == "search_purchases":
@@ -415,28 +381,6 @@ async def _search_clothing(tool_input: dict) -> dict:
 
     print(f"[mira-tools] search_clothing: → {len(results)} results")
     return {"results": results}
-
-
-async def _present_items(tool_input: dict) -> dict:
-    """Present curated items to the mirror display via Socket.io broadcast."""
-    items = tool_input.get("items", [])
-    if not items:
-        print("[mira-tools] present_items: no items provided")
-        return {"error": "No items provided", "presented": 0}
-
-    # Cap at 5 items
-    items = items[:5]
-    print(f"[mira-tools] present_items: sending {len(items)} curated items to frontend")
-
-    return {
-        "presented": len(items),
-        "items": items,
-        # frontend_payload triggers Socket.io broadcast in orchestrator
-        "frontend_payload": {
-            "type": "clothing_results",
-            "items": items,
-        },
-    }
 
 
 async def _display_product(tool_input: dict) -> dict:

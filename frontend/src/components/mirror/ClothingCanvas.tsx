@@ -175,8 +175,9 @@ export function ClothingCanvas({
           resolve();
         };
 
-        img.onerror = () => {
-          console.error(`Failed to load image: ${item.imageUrl}`);
+        img.onerror = (e) => {
+          const urlPreview = item.imageUrl.startsWith('data:') ? `data:... (${item.imageUrl.length} chars)` : item.imageUrl;
+          console.error(`[MirrorV2:Canvas] Image load FAILED for "${item.name}" (${item.category}): ${urlPreview}`, e);
           onImageError?.(item.id, `Failed to load: ${item.imageUrl}`);
           resolve();
         };
