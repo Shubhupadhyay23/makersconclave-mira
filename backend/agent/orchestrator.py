@@ -537,6 +537,12 @@ class MiraOrchestrator:
             # Parallel broadcast: send results to frontend via Socket.io
             frontend_payload = result.pop("frontend_payload", None)
             if frontend_payload and self.sio:
+                payload_items = frontend_payload.get("items", [])
+                items_with_flat = sum(1 for i in payload_items if i.get("cleaned_image_url") or i.get("flat_image_url"))
+                items_with_type = sum(1 for i in payload_items if i.get("type") in ("top", "bottom"))
+                print(f"[mira] Emitting tool_result to room={session.user_id}: type={frontend_payload.get('type')} items={len(payload_items)} with_flat_lay={items_with_flat} with_type={items_with_type}")
+                if items_with_flat == 0 and len(payload_items) > 0:
+                    print(f"[mira] ⚠ No items have flat lay images — canvas overlay will be empty on frontend")
                 await self.sio.emit(
                     "tool_result",
                     frontend_payload,

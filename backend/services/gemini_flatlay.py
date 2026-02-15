@@ -52,9 +52,12 @@ async def _download_image(url: str) -> Optional[bytes]:
             response.raise_for_status()
             content_type = response.headers.get("content-type", "")
             if "image" not in content_type and not url.endswith((".jpg", ".png", ".webp")):
+                print(f"[Gemini] Image download rejected — content-type '{content_type}' for URL: {url[:120]}")
                 return None
+            print(f"[Gemini] Image downloaded OK — {len(response.content)} bytes from {url[:120]}")
             return response.content
-    except Exception:
+    except Exception as e:
+        print(f"[Gemini] Image download FAILED — {type(e).__name__}: {e} for URL: {url[:120]}")
         return None
 
 
@@ -82,6 +85,7 @@ async def generate_flat_lay(
         # Download the source image
         image_bytes = await _download_image(image_url)
         if not image_bytes:
+            print(f"[Gemini] Skipping flat lay for '{title[:40]}' — image download returned None")
             return None
 
         try:
@@ -186,6 +190,7 @@ async def generate_flat_lays_batch(
     flat_lay_map = {}
     for result in results:
         if isinstance(result, Exception):
+            print(f"[Gemini] Batch item exception: {type(result).__name__}: {result}")
             continue
         pid, data_url = result
         if pid and data_url:

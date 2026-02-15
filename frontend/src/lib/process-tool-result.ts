@@ -43,6 +43,12 @@ export function processToolResult(data: ToolResultData): ProcessedToolResult | n
   }
 
   if (data.type === "display_product") {
+    console.log(`[MirrorV2:ToolResult] display_product received ${data.items.length} items, outfit: "${data.outfit_name}"`);
+    // Log raw item data for debugging the pipeline
+    for (const it of data.items) {
+      console.log(`[MirrorV2:ToolResult]   → "${it.title}" type=${it.type ?? "MISSING"} image_url=${it.image_url ? "yes" : "no"} cleaned=${it.cleaned_image_url ? "yes" : "no"} flat=${it.flat_image_url ? "yes" : "no"}`);
+    }
+
     const canvasItems = mapToClothingItems(data.items);
     const priceInfo: PriceStripItem[] = data.items.map((it) => ({
       title: it.title,
@@ -52,6 +58,10 @@ export function processToolResult(data: ToolResultData): ProcessedToolResult | n
 
     // Always populate carousel cards for immediate visual feedback
     const carouselCards = mapItemsToCards(data.items);
+
+    if (canvasItems.length === 0 && data.items.length > 0) {
+      console.warn(`[MirrorV2:ToolResult] ⚠ ALL ${data.items.length} items filtered out by mapToClothingItems! Canvas will be empty. Likely causes: missing type field, or no cleaned_image_url/flat_image_url (Gemini flat lay generation may have failed).`);
+    }
 
     return { canvasItems, carouselCards, priceInfo, outfitName };
   }

@@ -475,6 +475,12 @@ async def _display_product(tool_input: dict) -> dict:
             item["cleaned_image_url"] = flat_lay_map[pid]
             item["flat_image_url"] = flat_lay_map[pid]
 
+    # Diagnostic: log item readiness for canvas overlay
+    for item in items:
+        has_flat = bool(item.get("cleaned_image_url") or item.get("flat_image_url"))
+        has_type = item.get("type") in ("top", "bottom")
+        print(f"[mira-tools] display_product item: '{item.get('title', '?')[:40]}' type={item.get('type', 'MISSING')} flat_lay={'YES' if has_flat else 'NO'} → canvas={'YES' if (has_flat and has_type) else 'NO'}")
+
     return {
         "displayed": len(items),
         "items": items,

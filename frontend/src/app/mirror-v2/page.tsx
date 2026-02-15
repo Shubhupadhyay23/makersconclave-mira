@@ -413,6 +413,9 @@ function MirrorV2Page() {
       }
 
       // Additionally populate canvas overlay (renders when pose available)
+      if (result.canvasItems.length > 0 && !currentPose) {
+        console.warn("[MirrorV2:ToolResult] Canvas items received but currentPose is null — overlay won't render until pose is detected");
+      }
       if (result.canvasItems.length > 0) {
         setOutfitOpacity(0);
         setCanvasOutfits((prev) => {
@@ -662,7 +665,10 @@ function MirrorV2Page() {
       switch (e.key) {
         case "d":
         case "D":
-          setDebugMode((d) => !d);
+          setDebugMode((d) => {
+            console.log(`[Mirror] Debug overlay ${d ? "OFF" : "ON"}`);
+            return !d;
+          });
           break;
 
         case "f":
