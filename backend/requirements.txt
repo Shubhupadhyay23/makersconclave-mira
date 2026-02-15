@@ -11,8 +11,7 @@ google-api-python-client==2.159.0
 serpapi==0.1.5
 deepgram-sdk==3.8.0
 beautifulsoup4==4.12.3
-pydantic==2.10.5
-pydantic-core==2.27.2
+pydantic>=2.11.7
 pytest==8.3.4
 pytest-asyncio==0.24.0
 tabulate==0.9.0
