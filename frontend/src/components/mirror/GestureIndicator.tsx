@@ -16,11 +16,16 @@ const GESTURE_DISPLAY: Record<
 const CONFIRMED_DISPLAY_MS = 1500;
 const RING_SIZE = 120;
 const STROKE_WIDTH = 6;
+const HOLD_DURATION_S = 2; // must match HOLD_DURATION_MS in page.tsx
+const RADIUS = (RING_SIZE - STROKE_WIDTH) / 2;
+const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 interface GestureIndicatorProps {
   gesture: GestureType | null;
   gestureKey?: number;
   pendingGesture?: GestureType | null;
+  holdKey?: number;
+  /** @deprecated use holdKey + CSS animation instead */
   holdProgress?: number;
 }
 
@@ -28,7 +33,7 @@ export function GestureIndicator({
   gesture,
   gestureKey = 0,
   pendingGesture = null,
-  holdProgress = 0,
+  holdKey = 0,
 }: GestureIndicatorProps) {
   const [confirmedGesture, setConfirmedGesture] = useState<GestureType | null>(null);
   const [confirmedVisible, setConfirmedVisible] = useState(false);
@@ -44,12 +49,9 @@ export function GestureIndicator({
     return () => clearTimeout(timer);
   }, [gestureKey, gesture]);
 
-  // ── Pending hold state (ring filling) ──
-  if (pendingGesture && holdProgress > 0 && holdProgress < 1) {
+  // ── Pending hold state (CSS-animated ring filling) ──
+  if (pendingGesture) {
     const display = GESTURE_DISPLAY[pendingGesture];
-    const radius = (RING_SIZE - STROKE_WIDTH) / 2;
-    const circumference = 2 * Math.PI * radius;
-    const dashoffset = circumference * (1 - holdProgress);
 
     return (
       <div
@@ -75,23 +77,26 @@ export function GestureIndicator({
             <circle
               cx={RING_SIZE / 2}
               cy={RING_SIZE / 2}
-              r={radius}
+              r={RADIUS}
               fill="none"
               stroke="rgba(255,255,255,0.2)"
               strokeWidth={STROKE_WIDTH}
             />
-            {/* Progress ring */}
+            {/* Progress ring — CSS keyframe drives the fill */}
             <circle
+              key={holdKey}
               cx={RING_SIZE / 2}
               cy={RING_SIZE / 2}
-              r={radius}
+              r={RADIUS}
               fill="none"
               stroke="#fff"
               strokeWidth={STROKE_WIDTH}
               strokeLinecap="round"
-              strokeDasharray={circumference}
-              strokeDashoffset={dashoffset}
-              style={{ transition: "stroke-dashoffset 100ms linear" }}
+              strokeDasharray={CIRCUMFERENCE}
+              strokeDashoffset={CIRCUMFERENCE}
+              style={{
+                animation: `gestureRingFill ${HOLD_DURATION_S}s linear forwards`,
+              }}
             />
           </svg>
           {/* Icon centered inside ring */}
@@ -118,6 +123,14 @@ export function GestureIndicator({
         >
           {display.pendingLabel}
         </div>
+
+        {/* Scoped keyframes for the ring animation */}
+        <style>{`
+          @keyframes gestureRingFill {
+            from { stroke-dashoffset: ${CIRCUMFERENCE}; }
+            to   { stroke-dashoffset: 0; }
+          }
+        `}</style>
       </div>
     );
   }

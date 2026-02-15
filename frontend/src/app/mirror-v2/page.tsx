@@ -36,6 +36,7 @@ interface ActiveUser {
 
 const PHONE_URL = process.env.NEXT_PUBLIC_PHONE_URL || "https://mirrorless.vercel.app/phone";
 const WAITING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+const HOLD_DURATION_MS = 2000;
 const CANVAS_WIDTH = 1920;
 const CANVAS_HEIGHT = 1080;
 
@@ -58,12 +59,12 @@ function MirrorV2Page() {
   const { videoRef, isReady: isCameraReady } = useCamera();
 
   // ── Gesture recognition ──
-  const HOLD_DURATION_MS = 2000;
   const [lastGesture, setLastGesture] = useState<GestureType | null>(null);
   const gestureKeyRef = useRef(0);
   const [gestureKey, setGestureKey] = useState(0);
-  const [holdProgress, setHoldProgress] = useState(0);
   const [pendingGestureType, setPendingGestureType] = useState<GestureType | null>(null);
+  const holdKeyRef = useRef(0);
+  const [holdKey, setHoldKey] = useState(0);
   const holdStartRef = useRef<number | null>(null);
   const holdGestureRef = useRef<GestureType | null>(null);
   const holdLastSeenRef = useRef<number>(0);
@@ -589,13 +590,16 @@ function MirrorV2Page() {
         holdGestureRef.current = gesture.type;
         holdStartRef.current = now;
         setPendingGestureType(gesture.type);
-        setHoldProgress(0);
+        holdKeyRef.current += 1;
+        setHoldKey(holdKeyRef.current);
       }
     },
     [userId, canvasOutfits.length],
   );
 
-  // ── Hold-to-confirm progress loop (rAF) ──
+  // ── Hold-to-confirm timer loop (rAF) ──
+  // The visual ring animation is CSS-driven; this loop only handles
+  // staleness cancellation and dispatching at completion.
   useEffect(() => {
     const tick = () => {
       holdRafRef.current = requestAnimationFrame(tick);
@@ -609,16 +613,12 @@ function MirrorV2Page() {
         holdGestureRef.current = null;
         holdStartRef.current = null;
         setPendingGestureType(null);
-        setHoldProgress(0);
         return;
       }
 
-      const elapsed = now - holdStartRef.current;
-      const progress = Math.min(elapsed / HOLD_DURATION_MS, 1);
-      setHoldProgress(progress);
-
       // Hold completed → dispatch the gesture event
-      if (progress >= 1) {
+      const elapsed = now - holdStartRef.current;
+      if (elapsed >= HOLD_DURATION_MS) {
         const gestureType = holdGestureRef.current;
 
         setLastGesture(gestureType);
@@ -639,7 +639,6 @@ function MirrorV2Page() {
         holdGestureRef.current = null;
         holdStartRef.current = null;
         setPendingGestureType(null);
-        setHoldProgress(0);
       }
     };
 
@@ -907,8 +906,8 @@ function MirrorV2Page() {
         </div>
       )}
 
-      {/* Debug overlay (z-6, toggle with 'd') */}
-      <div style={{ position: "absolute", inset: 0, zIndex: 6 }}>
+      {/* Debug overlay (z-6 normally, z-50 when active to render above attract/waiting overlays) */}
+      <div style={{ position: "absolute", inset: 0, zIndex: debugMode ? 50 : 6 }}>
         <DebugOverlay
           pose={currentPose}
           items={activeCanvasOutfit}
@@ -967,7 +966,7 @@ function MirrorV2Page() {
         gesture={lastGesture}
         gestureKey={gestureKey}
         pendingGesture={pendingGestureType}
-        holdProgress={holdProgress}
+        holdKey={holdKey}
       />
 
       {/* === RECAP STATE === (z-25) */}
