@@ -12,6 +12,8 @@ from typing import Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
 
+from services.background_removal import remove_background
+
 load_dotenv()
 
 # Concurrency limit to avoid rate limiting
@@ -125,7 +127,12 @@ async def generate_flat_lay(
                             if inline_data and inline_data.get("data"):
                                 mime = inline_data.get("mimeType", "image/png")
                                 b64 = inline_data["data"]
-                                return f"data:{mime};base64,{b64}"
+                                data_url = f"data:{mime};base64,{b64}"
+                                try:
+                                    data_url = await remove_background(data_url)
+                                except Exception as e:
+                                    print(f"[rembg] Background removal failed, using original: {e}")
+                                return data_url
                     return None
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code in (403, 429):
