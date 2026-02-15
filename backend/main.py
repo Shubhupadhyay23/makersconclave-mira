@@ -47,6 +47,174 @@ async def health():
     return {"status": "ok"}
 
 
+@app.post("/api/test/recommend")
+async def test_recommend(body: dict):
+    """
+    Test endpoint: full recommendation pipeline.
+
+    1. Serper search for tops + bottoms by brand
+    2. Claude (Haiku) picks outfits with Mira commentary
+    3. Nano Banana generates flat lays for selected items
+    4. Returns outfits + voice messages
+
+    Body: {"brands": ["Nike", "Zara"], "gender": "mens", "style_notes": "casual"}
+    """
+    import asyncio
+    import json
+    import os
+    from anthropic import AsyncAnthropic
+    from services.serper_search import build_brand_queries, fetch_clothing_batch
+    from services.gemini_flatlay import generate_flat_lays_batch
+    from agent.tools import _select_diverse_items
+
+    brands = body.get("brands", ["Nike", "Zara", "H&M"])
+    gender = body.get("gender", "mens")
+    style_notes = body.get("style_notes", "casual")
+
+    serper_key = os.getenv("SERPER_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    if not serper_key:
+        raise HTTPException(status_code=500, detail="SERPER_API_KEY not configured")
+    if not anthropic_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    # Step 1: Search Serper for tops + bottoms
+    print(f"[test-recommend] Searching: brands={brands}, gender={gender}")
+    brand_queries = build_brand_queries(brands[:5], gender)
+
+    tops_items, bottoms_items = await asyncio.gather(
+        fetch_clothing_batch(brand_queries["tops"], serper_key, num_results_per_query=3),
+        fetch_clothing_batch(brand_queries["bottoms"], serper_key, num_results_per_query=3),
+    )
+
+    for item in tops_items:
+        item["clothing_category"] = "top"
+    for item in bottoms_items:
+        item["clothing_category"] = "bottom"
+
+    tops = _select_diverse_items(tops_items, 8)
+    bottoms = _select_diverse_items(bottoms_items, 8)
+    all_items = tops + bottoms
+
+    if not all_items:
+        return {"outfits": [], "voice": "No items found. Try different brands."}
+
+    # Step 2: Claude picks outfits with Mira commentary
+    def _format_items(items):
+        text = ""
+        for item in items:
+            text += (
+                f"- **{item['title']}**\n"
+                f"  Source: {item['source']}, Price: {item['price']}\n"
+                f"  Image: {item['image_url']}\n"
+                f"  Product ID: {item['product_id']}\n"
+            )
+        return text
+
+    claude_prompt = f"""You are Mira, a confident AI fashion stylist.
+
+Pick 2 outfit combinations from the items below. Each outfit MUST have exactly 1 top + 1 bottom.
+Style preference: {style_notes}
+
+### TOPS (pick from here):
+{_format_items(tops)}
+
+### BOTTOMS (pick from here):
+{_format_items(bottoms)}
+
+Return ONLY this JSON:
+```json
+{{
+  "outfits": [
+    {{
+      "outfit_name": "Name of outfit",
+      "top": {{"title": "exact title", "product_id": "exact id", "price": "$XX", "image_url": "exact url", "source": "exact source"}},
+      "bottom": {{"title": "exact title", "product_id": "exact id", "price": "$XX", "image_url": "exact url", "source": "exact source"}},
+      "voice": "1-2 sentence Mira-style explanation of why this outfit works"
+    }}
+  ]
+}}
+```"""
+
+    client = AsyncAnthropic(api_key=anthropic_key)
+    claude_response = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": claude_prompt}],
+    )
+
+    # Parse Claude's response
+    response_text = claude_response.content[0].text
+    from agent.orchestrator import _extract_json_from_text
+    parsed = _extract_json_from_text(response_text)
+
+    if not parsed or not parsed.get("outfits"):
+        return {"outfits": [], "voice": "Couldn't generate recommendations. Try again."}
+
+    # Step 3: Generate flat lays for selected items
+    flatlay_items = []
+    for outfit in parsed["outfits"]:
+        for slot in ["top", "bottom"]:
+            item = outfit.get(slot, {})
+            if item.get("image_url") and item.get("product_id"):
+                flatlay_items.append({
+                    "image_url": item["image_url"],
+                    "title": item.get("title", ""),
+                    "product_id": item["product_id"],
+                })
+
+    flat_lay_map = {}
+    if flatlay_items:
+        try:
+            print(f"[test-recommend] Generating {len(flatlay_items)} flat lays...")
+            flat_lay_map = await generate_flat_lays_batch(flatlay_items)
+        except Exception as e:
+            print(f"[test-recommend] Flat lay generation failed: {e}")
+
+    # Step 4: Build response with flat lay images
+    result_outfits = []
+    for outfit in parsed["outfits"]:
+        top = outfit.get("top", {})
+        bottom = outfit.get("bottom", {})
+
+        top_flat = flat_lay_map.get(top.get("product_id", ""))
+        bottom_flat = flat_lay_map.get(bottom.get("product_id", ""))
+
+        # Only include if at least one item has a flat lay
+        if top_flat or bottom_flat:
+            result_outfits.append({
+                "outfit_name": outfit.get("outfit_name", "Outfit"),
+                "voice": outfit.get("voice", ""),
+                "items": [
+                    *([{
+                        "id": top["product_id"],
+                        "title": top.get("title", ""),
+                        "price": top.get("price", ""),
+                        "category": "tops",
+                        "imageUrl": top_flat,
+                        "source": top.get("source", ""),
+                    }] if top_flat else []),
+                    *([{
+                        "id": bottom["product_id"],
+                        "title": bottom.get("title", ""),
+                        "price": bottom.get("price", ""),
+                        "category": "bottoms",
+                        "imageUrl": bottom_flat,
+                        "source": bottom.get("source", ""),
+                    }] if bottom_flat else []),
+                ],
+            })
+
+    print(f"[test-recommend] Returning {len(result_outfits)} outfits with flat lays")
+
+    return {
+        "outfits": result_outfits,
+        "total_tops": len(tops),
+        "total_bottoms": len(bottoms),
+        "flat_lays_generated": len(flat_lay_map),
+    }
+
+
 # --- REST API endpoints for recommendations ---
 
 

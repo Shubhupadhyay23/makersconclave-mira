@@ -62,12 +62,15 @@ export default function MirrorTestPage() {
     [showToast]
   );
 
-  // Add new clothing item
-  const handleAddItem = useCallback((item: ClothingItem) => {
-    setOutfits((prev) => [...prev, [item]]);
-    setCurrentIndex(outfits.length); // Switch to new item
-    showToast('Item added successfully', 'success');
-  }, [outfits.length, showToast]);
+  // Add a multi-item outfit
+  const handleAddOutfit = useCallback((items: ClothingItem[]) => {
+    setOutfits((prev) => {
+      const next = [...prev, items];
+      setCurrentIndex(next.length - 1);
+      return next;
+    });
+    showToast(`Outfit with ${items.length} items added`, 'success');
+  }, [showToast]);
 
   // Delete outfit
   const handleDeleteOutfit = useCallback((id: string) => {
@@ -293,9 +296,10 @@ export default function MirrorTestPage() {
 
       {/* Test sidebar */}
       <TestSidebar
-        items={Array.from(new Map(outfits.flat().map(item => [item.id, item])).values())}
+        outfits={outfits}
         currentIndex={currentIndex}
-        onAdd={handleAddItem}
+        onAddOutfit={handleAddOutfit}
+        onSelect={setCurrentIndex}
         onDelete={handleDeleteOutfit}
         debugMode={debugMode}
       />

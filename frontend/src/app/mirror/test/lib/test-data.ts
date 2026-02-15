@@ -8,14 +8,14 @@ export const DEFAULT_TEST_CLOTHES: ClothingItem[] = [
   {
     id: 't1',
     category: 'tops',
-    imageUrl: '/test-images/tops/white-tshirt.png',
-    name: 'White T-Shirt',
+    imageUrl: '/test-images/tops/nano-white-tshirt.png',
+    name: 'White T-Shirt (Nano Banana)',
   },
   {
     id: 'b1',
     category: 'bottoms',
-    imageUrl: '/test-images/bottoms/blue-jeans.png',
-    name: 'Blue Jeans',
+    imageUrl: '/test-images/bottoms/nano-blue-jeans.png',
+    name: 'Blue Jeans (Nano Banana)',
   },
 ];
 

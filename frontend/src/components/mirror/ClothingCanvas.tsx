@@ -105,13 +105,24 @@ export function ClothingCanvas({
 
         // Load new image
         const img = new Image();
-        img.crossOrigin = 'anonymous';
+        // Only set crossOrigin for external URLs — data URLs don't need it
+        // and it can cause tainted canvas errors in some browsers
+        if (!item.imageUrl.startsWith('data:')) {
+          img.crossOrigin = 'anonymous';
+        }
 
         img.onload = () => {
           if (mounted) {
             // Detect and store content bounds (crop transparent padding)
-            const bounds = detectImageBounds(img);
-            boundsRef.current.set(item.id, bounds);
+            try {
+              const bounds = detectImageBounds(img);
+              boundsRef.current.set(item.id, bounds);
+            } catch {
+              // Fallback to full image bounds if canvas is tainted
+              boundsRef.current.set(item.id, {
+                x: 0, y: 0, width: img.width, height: img.height,
+              });
+            }
 
             loaded.add(item.id);
             setLoadedImages(new Set(loaded));
