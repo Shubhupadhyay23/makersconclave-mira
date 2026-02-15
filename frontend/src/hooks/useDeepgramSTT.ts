@@ -61,6 +61,7 @@ export function useDeepgramSTT(): UseDeepgramSTTReturn {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        console.log("[MirrorV2:STT] Connected to Deepgram");
         setIsListening(true);
         reconnectCountRef.current = 0;
 
@@ -126,21 +127,25 @@ export function useDeepgramSTT(): UseDeepgramSTTReturn {
             setInterimTranscript(text);
           }
         } catch {
-          // Ignore non-JSON messages
+          console.warn("[MirrorV2:STT] Non-JSON message received");
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        console.warn("[MirrorV2:STT] Disconnected:", event.reason || `code=${event.code}`);
         // Exponential backoff reconnect (max 3 attempts)
         if (reconnectCountRef.current < MAX_RECONNECTS && streamRef.current) {
           reconnectCountRef.current += 1;
           const delay = Math.min(1000 * Math.pow(2, reconnectCountRef.current - 1), 5000);
-          console.log(`[DeepgramSTT] Reconnecting (attempt ${reconnectCountRef.current}/${MAX_RECONNECTS}) in ${delay}ms`);
+          console.warn(`[MirrorV2:STT] Reconnecting, attempt: ${reconnectCountRef.current}/${MAX_RECONNECTS} in ${delay}ms`);
           setTimeout(() => {
             if (streamRef.current) {
               connectWebSocket(streamRef.current);
             }
           }, delay);
+        } else if (reconnectCountRef.current >= MAX_RECONNECTS) {
+          console.error("[MirrorV2:STT] Max reconnects reached, STT offline");
+          setIsListening(false);
         } else {
           setIsListening(false);
         }
@@ -162,7 +167,7 @@ export function useDeepgramSTT(): UseDeepgramSTTReturn {
       streamRef.current = stream;
       connectWebSocket(stream);
     } catch (err) {
-      console.error("[DeepgramSTT] Failed to get audio stream:", err);
+      console.error("[MirrorV2:STT] Microphone access failed:", err instanceof Error ? err.message : err);
     }
   }, [connectWebSocket]);
 

@@ -31,6 +31,7 @@ export function useGestureRecognizer({
   const swipeStateRef = useRef<SwipeState>(createSwipeState());
   const rafRef = useRef<number>(0);
   const lastVideoTimeRef = useRef<number>(-1);
+  const videoNotReadyWarnedRef = useRef(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const onGestureRef = useRef(onGesture);
@@ -61,8 +62,10 @@ export function useGestureRecognizer({
 
         recognizerRef.current = recognizer;
         setIsLoading(false);
+        console.log("[MirrorV2:Gesture] Model loaded");
       } catch (err) {
         if (!cancelled) {
+          console.error("[MirrorV2:Gesture] Model load failed:", err);
           setError(
             err instanceof Error ? err.message : "Failed to load gesture model"
           );
@@ -89,6 +92,10 @@ export function useGestureRecognizer({
       const recognizer = recognizerRef.current;
 
       if (!video || !recognizer || video.readyState < 2) {
+        if (!videoNotReadyWarnedRef.current && video && video.readyState < 2) {
+          console.warn("[MirrorV2:Gesture] Video not ready, waiting...");
+          videoNotReadyWarnedRef.current = true;
+        }
         rafRef.current = requestAnimationFrame(processFrame);
         return;
       }
@@ -100,28 +107,33 @@ export function useGestureRecognizer({
       lastVideoTimeRef.current = video.currentTime;
 
       const now = performance.now();
-      const result = recognizer.recognizeForVideo(video, now);
 
-      // Check built-in gestures (thumbs up/down)
-      if (result.gestures.length > 0 && result.gestures[0].length > 0) {
-        const topGesture = result.gestures[0][0];
-        const detected = classifyBuiltInGesture(
-          topGesture.categoryName,
-          topGesture.score,
-          now
-        );
-        if (detected) {
-          onGestureRef.current(detected);
-        }
-      }
+      try {
+        const result = recognizer.recognizeForVideo(video, now);
 
-      // Check swipe via landmark tracking (wrist = landmark 0)
-      if (result.landmarks.length > 0 && result.landmarks[0].length > 0) {
-        const wrist = result.landmarks[0][0];
-        const swipe = detectSwipe(swipeStateRef.current, wrist.x, now);
-        if (swipe) {
-          onGestureRef.current(swipe);
+        // Check built-in gestures (thumbs up/down)
+        if (result.gestures.length > 0 && result.gestures[0].length > 0) {
+          const topGesture = result.gestures[0][0];
+          const detected = classifyBuiltInGesture(
+            topGesture.categoryName,
+            topGesture.score,
+            now
+          );
+          if (detected) {
+            onGestureRef.current(detected);
+          }
         }
+
+        // Check swipe via landmark tracking (wrist = landmark 0)
+        if (result.landmarks.length > 0 && result.landmarks[0].length > 0) {
+          const wrist = result.landmarks[0][0];
+          const swipe = detectSwipe(swipeStateRef.current, wrist.x, now);
+          if (swipe) {
+            onGestureRef.current(swipe);
+          }
+        }
+      } catch (err) {
+        console.error("[MirrorV2:Gesture] Recognition frame error:", err);
       }
 
       rafRef.current = requestAnimationFrame(processFrame);

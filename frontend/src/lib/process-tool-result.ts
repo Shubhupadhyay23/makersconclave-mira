@@ -37,7 +37,10 @@ export interface ProcessedToolResult {
  * Returns null for unknown types or empty items.
  */
 export function processToolResult(data: ToolResultData): ProcessedToolResult | null {
-  if (!data.items || data.items.length === 0) return null;
+  if (!data.items || data.items.length === 0) {
+    console.warn("[MirrorV2:ToolResult] No items in:", data.type);
+    return null;
+  }
 
   if (data.type === "display_product") {
     const canvasItems = mapToClothingItems(data.items);
@@ -47,14 +50,10 @@ export function processToolResult(data: ToolResultData): ProcessedToolResult | n
     }));
     const outfitName = data.outfit_name || "";
 
-    // If flat lay generation succeeded, use canvas overlay
-    if (canvasItems.length > 0) {
-      return { canvasItems, carouselCards: [], priceInfo, outfitName };
-    }
-
-    // Fallback: no flat lays available, show as carousel cards instead
+    // Always populate carousel cards for immediate visual feedback
     const carouselCards = mapItemsToCards(data.items);
-    return { canvasItems: [], carouselCards, priceInfo, outfitName };
+
+    return { canvasItems, carouselCards, priceInfo, outfitName };
   }
 
   if (data.type === "clothing_results") {
@@ -63,6 +62,7 @@ export function processToolResult(data: ToolResultData): ProcessedToolResult | n
     return { canvasItems: [], carouselCards, priceInfo: [], outfitName: "" };
   }
 
+  console.warn("[MirrorV2:ToolResult] Unknown tool type:", data.type);
   return null;
 }
 

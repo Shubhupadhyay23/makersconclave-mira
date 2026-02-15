@@ -117,8 +117,16 @@ function MirrorV2Page() {
   // Track whether emotion has been parsed for this response
   const emotionParsedRef = useRef(false);
 
+  // Track whether we just interrupted Mira (ignore stale mira_speech chunks)
+  const interruptedRef = useRef(false);
+
   // Current user ID for session
   const userId = activeUser?.id ?? null;
+
+  // ── Log kiosk state transitions ──
+  useEffect(() => {
+    console.log("[MirrorV2:State]", kioskState, activeUser ? `user=${activeUser.name}` : "");
+  }, [kioskState, activeUser]);
 
   // ── Pose detection callback ──
   const handlePoseUpdate = useCallback((result: PoseResult) => {
@@ -141,7 +149,18 @@ function MirrorV2Page() {
     socket.connect();
     socket.emit("join_mirror_room");
 
+    const onConnect = () => console.log("[MirrorV2:Socket] Connected, id:", socket.id);
+    const onConnectError = (err: Error) => console.error("[MirrorV2:Socket] Connection error:", err.message);
+    const onDisconnect = (reason: string) => console.warn("[MirrorV2:Socket] Disconnected:", reason);
+
+    socket.on("connect", onConnect);
+    socket.on("connect_error", onConnectError);
+    socket.on("disconnect", onDisconnect);
+
     return () => {
+      socket.off("connect", onConnect);
+      socket.off("connect_error", onConnectError);
+      socket.off("disconnect", onDisconnect);
       socket.disconnect();
     };
   }, []);
@@ -258,6 +277,14 @@ function MirrorV2Page() {
     }
 
     const handleSpeech = (data: { text?: string; is_chunk?: boolean }) => {
+      // Ignore stale chunks from the pre-interrupt response
+      if (interruptedRef.current) {
+        if (data.is_chunk === false) {
+          interruptedRef.current = false; // Old response ended
+        }
+        return;
+      }
+
       // Fallback session detection
       if (!sessionActive && !isStarting) {
         setKioskState("session");
@@ -364,11 +391,19 @@ function MirrorV2Page() {
       outfit_name?: string;
     }) => {
       const result = processToolResult(data);
-      if (!result) return;
+      if (!result) {
+        console.warn("[MirrorV2:ToolResult] Ignored — processToolResult returned null for:", data.type, data);
+        return;
+      }
+      console.log("[MirrorV2:ToolResult] Processed:", data.type, "canvas:", result.canvasItems.length, "carousel:", result.carouselCards.length);
 
-      // Canvas overlay (display_product with flat lays)
+      // Always show carousel cards (doesn't need pose detection)
+      if (result.carouselCards.length > 0) {
+        setCarouselItems(result.carouselCards);
+      }
+
+      // Additionally populate canvas overlay (renders when pose available)
       if (result.canvasItems.length > 0) {
-        setCarouselItems([]);
         setOutfitOpacity(0);
         setCanvasOutfits((prev) => {
           const next = [
@@ -387,12 +422,6 @@ function MirrorV2Page() {
             setOutfitOpacity(1);
           });
         });
-        return;
-      }
-
-      // Carousel cards (clothing_results or display_product fallback)
-      if (result.carouselCards.length > 0) {
-        setCarouselItems(result.carouselCards);
       }
     };
 
@@ -460,18 +489,28 @@ function MirrorV2Page() {
     }
   }, [mira.isSpeaking, userId]);
 
-  // ── Forward final STT transcripts ──
+  // ── Forward final STT transcripts (interrupt Mira if speaking) ──
   useEffect(() => {
     if (!stt.transcript || !userId) return;
 
     if (mira.isSpeaking) {
-      pendingTranscriptRef.current = stt.transcript;
-    } else {
-      socket.emit("mirror_event", {
-        user_id: userId,
-        event: { type: "voice", transcript: stt.transcript },
-      });
+      // INTERRUPT: stop TTS/avatar and tell backend to abort the stream
+      mira.stop();
+      interruptedRef.current = true;
+      sentenceBufferRef.current = "";
+      currentEmotionRef.current = "idle";
+      emotionParsedRef.current = false;
+      setSpeechText("");
+      setSpeechVisible(false);
+      socket.emit("interrupt", { user_id: userId });
     }
+
+    // Always send transcript immediately (whether interrupting or not)
+    socket.emit("mirror_event", {
+      user_id: userId,
+      event: { type: "voice", transcript: stt.transcript },
+    });
+    pendingTranscriptRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stt.transcript, userId]);
 
@@ -492,9 +531,8 @@ function MirrorV2Page() {
       const base64 = dataUrl.split(",")[1];
 
       socket.emit("mirror_event", {
-        type: "snapshot",
-        image_base64: base64,
         user_id: userId,
+        event: { type: "snapshot", image_base64: base64 },
       });
     };
 
@@ -826,13 +864,13 @@ function MirrorV2Page() {
         <SpeechDisplay text={speechText} visible={speechVisible} />
       )}
 
-      {/* Product carousel fallback (z-10, bottom) */}
-      {sessionActive && carouselItems.length > 0 && (
+      {/* Product carousel (z-10, bottom) — hidden when canvas overlay is active on body */}
+      {sessionActive && carouselItems.length > 0 && !(activeCanvasOutfit.length > 0 && currentPose) && (
         <ProductCarousel items={carouselItems} onGesture={handleCarouselGesture} />
       )}
 
-      {/* Price strip (z-15, bottom) — hidden when carousel is showing */}
-      {sessionActive && activePriceItems.length > 0 && carouselItems.length === 0 && (
+      {/* Price strip (z-15, bottom) — shows when canvas overlay is active */}
+      {sessionActive && activePriceItems.length > 0 && activeCanvasOutfit.length > 0 && currentPose && (
         <PriceStrip items={activePriceItems} />
       )}
 

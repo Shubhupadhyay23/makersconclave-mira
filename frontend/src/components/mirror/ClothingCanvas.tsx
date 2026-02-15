@@ -134,7 +134,8 @@ export function ClothingCanvas({
           try {
             const bounds = detectImageBounds(img);
             boundsRef.current.set(item.id, bounds);
-          } catch {
+          } catch (err) {
+            console.warn("[MirrorV2:Canvas] Image bounds detection failed:", err);
             boundsRef.current.set(item.id, {
               x: 0, y: 0, width: img.width, height: img.height,
             });
@@ -150,7 +151,8 @@ export function ClothingCanvas({
               } else {
                 fitStatusRef.current.set(item.id, 'fallback');
               }
-            } catch {
+            } catch (err) {
+              console.warn("[MirrorV2:Canvas] Anchor detection failed, using fallback:", err);
               fitStatusRef.current.set(item.id, 'fallback');
             }
           } else if (item.category === 'bottoms') {
@@ -162,7 +164,8 @@ export function ClothingCanvas({
               } else {
                 fitStatusRef.current.set(item.id, 'fallback');
               }
-            } catch {
+            } catch (err) {
+              console.warn("[MirrorV2:Canvas] Anchor detection failed, using fallback:", err);
               fitStatusRef.current.set(item.id, 'fallback');
             }
           }
@@ -202,7 +205,10 @@ export function ClothingCanvas({
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      console.error("[MirrorV2:Canvas] getContext('2d') returned null");
+      return;
+    }
 
     // Use current pose or freeze at last known position
     const poseToRender = pose || lastPoseRef.current;
