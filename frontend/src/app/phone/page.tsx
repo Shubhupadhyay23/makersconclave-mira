@@ -472,9 +472,14 @@ function OutfitCardView({
               }}
             >
               <img
-                src={oi.item.image_url}
+                src={oi.item.flat_image_url ?? oi.item.image_url}
                 alt={oi.item.title}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  mixBlendMode: "multiply",
+                }}
               />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
