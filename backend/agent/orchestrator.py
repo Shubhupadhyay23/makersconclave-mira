@@ -192,6 +192,7 @@ class MiraOrchestrator:
         """
         session = self.sessions.get(user_id)
         if not session or not session.is_active:
+            print(f"[mira] handle_event: no active session for {user_id}, ignoring event {event.get('type', '?')}")
             return
 
         session.is_processing = True
@@ -259,7 +260,7 @@ class MiraOrchestrator:
                     isinstance(block, dict) and block.get("type") == "tool_result"
                     for block in last_msg["content"]
                 ):
-                    return HAIKU_MODEL, 1024
+                    return HAIKU_MODEL, 2048
         return SONNET_MODEL, 400
 
     async def _call_claude(self, session: SessionState, tool_depth: int = 0) -> None:
@@ -276,9 +277,10 @@ class MiraOrchestrator:
         model, max_tokens = self._select_model(session)
         print(f"[mira] Using {model} (max_tokens={max_tokens}) for {session.user_id}")
 
-        # Collect full response (streaming to HeyGen happens via callback)
+        # Collect full response (streaming to frontend happens via callback)
         collected_text = ""
         tool_uses = []
+        print(f"[mira] Calling Claude for {session.user_id} (turn #{session.api_calls})...")
 
         try:
             async with self.client.messages.stream(
@@ -303,12 +305,17 @@ class MiraOrchestrator:
 
             # Signal end-of-message so frontend flushes the sentence buffer
             if collected_text:
+                print(f"[mira] AGENT SAID: {collected_text}")
                 await self._stream_text(session.user_id, "", end_of_message=True)
         except Exception as e:
             print(f"[mira] Claude API call failed for {session.user_id}: {e}")
             # Pop the last user message to keep conversation history consistent
             if session.conversation_history and session.conversation_history[-1]["role"] == "user":
                 session.conversation_history.pop()
+            # Emit a fallback message so the frontend user gets verbal feedback
+            fallback = "Hmm, my brain glitched for a second. What were we talking about?"
+            await self._stream_text(session.user_id, fallback)
+            await self._stream_text(session.user_id, "", end_of_message=True)
             return
 
         # Process any tool use blocks
@@ -460,7 +467,9 @@ class MiraOrchestrator:
         event_type = event.get("type")
 
         if event_type == "voice":
-            return event.get("transcript", "")
+            transcript = event.get("transcript", "")
+            print(f"[mira] USER SAID: {transcript}")
+            return transcript
 
         elif event_type == "gesture":
             gesture = event.get("gesture", "unknown")
@@ -508,12 +517,14 @@ class MiraOrchestrator:
         return str(event)
 
     async def _stream_text(self, user_id: str, text_chunk: str, end_of_message: bool = False) -> None:
-        """Stream a text chunk to the frontend and HeyGen.
+        """Stream a text chunk to the frontend.
 
         When end_of_message is True, emits is_chunk=false so the frontend's
         SentenceBuffer flushes any remaining text (the last sentence has no
         trailing delimiter to trigger a boundary).
         """
+        if end_of_message:
+            print(f"[mira] Stream end-of-message to {user_id}")
         if self.sio:
             await self.sio.emit(
                 "mira_speech",

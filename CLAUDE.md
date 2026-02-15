@@ -17,7 +17,7 @@ Mirrorless is an AI-powered smart mirror. Users onboard via phone (Google OAuth)
 
 - **AI Agent**: Custom event-driven orchestrator calling Claude API directly (NOT Claude Agents SDK). Events (voice, gestures, pose) are batched and sent to Claude.
 - **Claude Model**: Haiku 4.5 via Anthropic API with OAuth setup token + beta headers
-- **Voice**: Deepgram streaming STT (input) → HeyGen LiveAvatar API (output, planned)
+- **Voice**: Deepgram streaming STT (input) → ElevenLabs TTS via backend proxy (output) → Memoji avatar video loops
 - **Body tracking**: MediaPipe BlazePose (pose) + MediaPipe Hands (gestures) in browser
 - **Clothing overlay**: 2D affine transforms based on pose landmarks. Fallback: side-by-side display
 - **Clothing data**: Serper.dev Google Shopping API (not SerpAPI)
@@ -89,7 +89,8 @@ backend/            # Python FastAPI
 - `ANTHROPIC_API_KEY` — Claude API key (required)
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth (planned)
 - `DEEPGRAM_API_KEY` — Deepgram STT key (planned)
-- `HEYGEN_API_KEY` — HeyGen avatar API key (planned)
+- `ELEVENLABS_API_KEY` — ElevenLabs TTS API key (required for voice output)
+- `ELEVENLABS_VOICE_ID` — ElevenLabs voice ID (default: Sarah)
 
 ## Database Setup
 
@@ -119,7 +120,7 @@ Or use the Neon SQL Editor in the dashboard.
 - Mira agent orchestrator (event-driven Claude API calls)
 - Socket.io real-time communication
 - Clothing overlay rendering
-- HeyGen voice avatar integration
+- Memoji avatar with ElevenLabs TTS and scripted response videos
 - MCP server for Poke integration
 
 ## Conventions
