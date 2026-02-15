@@ -4,6 +4,7 @@ export interface ClothingItem {
   price: string;
   price_numeric: number | null;
   image_url: string;
+  cleaned_image_url?: string;
   flat_image_url?: string;
   link: string;
   product_id: string;

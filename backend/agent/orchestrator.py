@@ -665,13 +665,14 @@ async def generate_outfit_recommendations(
         # Step 5: Map flat lays to selected outfit items + save to DB
         outfits = recommendations.get("outfits", [])
 
-        # Attach flat lay images to outfit items
+        # Attach flat lay images as both flat_image_url and cleaned_image_url
         for outfit in outfits:
             for outfit_item in outfit.get("items", []):
                 item = outfit_item.get("item", {})
                 pid = item.get("product_id", "")
                 if pid in flat_lay_map:
                     item["flat_image_url"] = flat_lay_map[pid]
+                    item["cleaned_image_url"] = flat_lay_map[pid]
 
         outfit_ids = await save_outfits_to_database(db, session_id, outfits)
 

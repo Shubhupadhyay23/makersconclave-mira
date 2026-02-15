@@ -17,14 +17,23 @@ load_dotenv()
 # Concurrency limit to avoid rate limiting
 MAX_CONCURRENT = 5
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+GEMINI_MODELS = [
+    "gemini-2.0-flash-exp-image-generation",
+    "gemini-2.5-flash-image",
+]
 
 FLAT_LAY_PROMPT = (
-    "Transform this into a minimalist flat lay photo. "
-    "Top-down view, soft natural light, plain white background. "
-    "Remove any model, mannequin, hanger, or background. "
-    "Lay the clothing item completely flat and neatly spread out as if placed on a clean surface. "
-    "Show the full garment — no cropping. Keep colors, fabric texture, and details accurate."
+    "Generate a clean flat lay product photo of ONLY the clothing item. "
+    "CRITICAL RULES:\n"
+    "- Remove ALL human body parts — no head, face, arms, hands, legs, feet, skin\n"
+    "- Remove any model, mannequin, hanger, tag, or background element\n"
+    "- Flatten the garment as if laid on a flat surface — no posed angles, no popped legs, no angled shoulders\n"
+    "- Show the FULL garment from top to bottom — no cropping whatsoever\n"
+    "- Use a plain solid light gray (#F0F0F0) background\n"
+    "- Top-down view, soft even lighting, no harsh shadows\n"
+    "- Preserve accurate colors, fabric texture, patterns, and details of the original\n"
+    "- Output ONLY the clothing item as if photographed flat on a clean surface"
 )
 
 
@@ -96,25 +105,35 @@ async def generate_flat_lay(
                 },
             }
 
-            response = await http_client.post(
-                f"{GEMINI_API_URL}?key={api_key}",
-                json=payload,
-                timeout=60,
-            )
-            response.raise_for_status()
-            data = response.json()
+            # Try each model in order, falling back on 403/429 errors
+            for model in GEMINI_MODELS:
+                url = f"{GEMINI_API_BASE}/{model}:generateContent?key={api_key}"
+                try:
+                    response = await http_client.post(url, json=payload, timeout=60)
+                    if response.status_code in (403, 429):
+                        print(f"[Gemini] {model} returned {response.status_code}, trying next model...")
+                        continue
+                    response.raise_for_status()
+                    data = response.json()
 
-            # Extract generated image from response
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                for part in parts:
-                    inline_data = part.get("inlineData")
-                    if inline_data and inline_data.get("data"):
-                        mime = inline_data.get("mimeType", "image/png")
-                        b64 = inline_data["data"]
-                        return f"data:{mime};base64,{b64}"
+                    # Extract generated image from response
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        for part in parts:
+                            inline_data = part.get("inlineData")
+                            if inline_data and inline_data.get("data"):
+                                mime = inline_data.get("mimeType", "image/png")
+                                b64 = inline_data["data"]
+                                return f"data:{mime};base64,{b64}"
+                    return None
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code in (403, 429):
+                        print(f"[Gemini] {model} returned {e.response.status_code}, trying next model...")
+                        continue
+                    raise
 
+            print(f"[Gemini] All models failed for '{title[:40]}'")
             return None
 
         except Exception as e:

@@ -524,20 +524,19 @@ function OutfitsView({
                 style={{
                   width: 180,
                   height: 220,
-                  background: "#fff",
+                  background: "#1a1a1a",
                   borderRadius: 8,
                   overflow: "hidden",
                   marginBottom: 8,
                 }}
               >
                 <img
-                  src={oi.item.flat_image_url ?? oi.item.image_url}
+                  src={oi.item.cleaned_image_url ?? oi.item.flat_image_url ?? oi.item.image_url}
                   alt={oi.item.title}
                   style={{
                     width: "100%",
                     height: "100%",
                     objectFit: "contain",
-                    mixBlendMode: "multiply",
                   }}
                 />
               </div>

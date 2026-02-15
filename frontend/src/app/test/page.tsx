@@ -151,15 +151,17 @@ function OutfitCard({ outfit }: { outfit: Outfit }) {
           <div key={idx} style={styles.itemCard}>
             <div style={styles.typeLabel}>{oi.type.toUpperCase()}</div>
             <div style={styles.imageContainer}>
-              {(oi.item.flat_image_url || oi.item.image_url) ? (
+              {(oi.item.cleaned_image_url || oi.item.flat_image_url || oi.item.image_url) ? (
                 <img
-                  src={oi.item.flat_image_url || oi.item.image_url}
+                  src={oi.item.cleaned_image_url ?? oi.item.flat_image_url ?? oi.item.image_url}
                   alt={oi.item.title}
                   style={styles.image}
                   onError={(e) => {
                     const img = e.target as HTMLImageElement;
-                    // Fallback to original image if flat lay fails to load
-                    if (oi.item.flat_image_url && img.src !== oi.item.image_url) {
+                    // Fallback chain: cleaned → flat → original
+                    if (oi.item.flat_image_url && img.src !== oi.item.flat_image_url && img.src !== oi.item.image_url) {
+                      img.src = oi.item.flat_image_url;
+                    } else if (img.src !== oi.item.image_url) {
                       img.src = oi.item.image_url;
                     } else {
                       img.style.display = "none";

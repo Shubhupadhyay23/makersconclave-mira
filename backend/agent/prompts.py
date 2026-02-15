@@ -561,10 +561,11 @@ def build_recommendation_prompt(user_data: Dict, available_clothing: List[Dict])
     # Format style profile
     style_text = ""
     if style_profile:
+        price_range = style_profile.get('price_range') or {}
         style_text = f"""
 **Style Profile**:
 - Favorite brands: {', '.join(style_profile.get('brands', []))}
-- Price range: ${style_profile.get('price_range', {{}}).get('min', 0)} - ${style_profile.get('price_range', {{}}).get('max', 500)}
+- Price range: ${price_range.get('min', 0)} - ${price_range.get('max', 500)}
 - Style tags: {', '.join(style_profile.get('style_tags', []))}
 """
     else:
