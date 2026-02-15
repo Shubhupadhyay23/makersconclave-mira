@@ -13,7 +13,9 @@ from scraper.brand_scanner import scan_brand_frequency
 from scraper.db import (
     store_purchases, store_style_profile, get_user_token, store_user_token,
     get_last_scraped_at, set_last_scraped_at, get_all_purchases,
+    store_calendar_events,
 )
+from scraper import calendar_fetch
 from scraper.socket_events import emit_purchase_found, emit_scrape_progress, emit_scrape_complete
 
 router = APIRouter(prefix="/api/scrape", tags=["scraping"])
@@ -68,6 +70,7 @@ async def _background_scrape(user_id: str, token_data: dict, sio):
 
     Incremental: if the user has been scraped before, only fetches emails
     newer than last_scraped_at. Profile is always rebuilt from ALL purchases.
+    Also fetches calendar events in parallel (failure doesn't block Gmail).
     """
     db = await get_neon_client()
     try:
@@ -101,6 +104,20 @@ async def _background_scrape(user_id: str, token_data: dict, sio):
 
         # Store final profile
         await store_style_profile(db, user_id, profile)
+
+        # Fetch calendar events in parallel (non-blocking, failures are ok)
+        try:
+            loop = asyncio.get_event_loop()
+            service = await loop.run_in_executor(
+                None, calendar_fetch.build_calendar_service, token_data
+            )
+            events = await loop.run_in_executor(
+                None, calendar_fetch.fetch_events, service
+            )
+            await store_calendar_events(db, user_id, events)
+            print(f"[scrape] Stored {len(events)} calendar events for {user_id}")
+        except Exception as cal_err:
+            print(f"[scrape] Calendar fetch failed for {user_id} (non-fatal): {cal_err}")
 
         # Emit completion with profile
         await emit_scrape_complete(sio, user_id, profile)
