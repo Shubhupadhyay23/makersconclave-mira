@@ -469,29 +469,37 @@ class MiraOrchestrator:
             return "[image]"
         return obj
 
+    @staticmethod
+    def _count_chars_recursive(obj, depth: int = 0) -> int:
+        """Count total string characters in a nested structure (dicts, lists, SDK objects)."""
+        if depth > 10:
+            return 0
+        if isinstance(obj, str):
+            return len(obj)
+        if isinstance(obj, dict):
+            return sum(MiraOrchestrator._count_chars_recursive(v, depth + 1) for v in obj.values())
+        if isinstance(obj, list):
+            return sum(MiraOrchestrator._count_chars_recursive(item, depth + 1) for item in obj)
+        # SDK ContentBlock objects (TextBlock, ToolUseBlock, etc.)
+        if hasattr(obj, "text"):
+            total = len(obj.text)
+            if hasattr(obj, "input"):
+                total += MiraOrchestrator._count_chars_recursive(obj.input, depth + 1)
+            return total
+        if hasattr(obj, "input"):
+            return MiraOrchestrator._count_chars_recursive(obj.input, depth + 1)
+        return 0
+
     def _estimate_history_tokens(self, session: SessionState) -> int:
         """Rough token estimate for conversation history + system prompt.
 
-        Uses chars / 4 heuristic — not exact, but good enough for a safety net.
+        Uses chars / 4 heuristic. Counts ALL nested content including list-valued
+        tool_result blocks, SDK ContentBlock objects, and deeply nested dicts.
         """
         total_chars = len(session.system_prompt)
         for msg in session.conversation_history:
             content = msg.get("content", "")
-            if isinstance(content, str):
-                total_chars += len(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        # tool_result content string, text blocks, image source data
-                        for val in block.values():
-                            if isinstance(val, str):
-                                total_chars += len(val)
-                            elif isinstance(val, dict):
-                                for v2 in val.values():
-                                    if isinstance(v2, str):
-                                        total_chars += len(v2)
-                    elif hasattr(block, "text"):
-                        total_chars += len(block.text)
+            total_chars += self._count_chars_recursive(content)
         return total_chars // 4
 
     def _emergency_compact(self, session: SessionState) -> None:
@@ -553,6 +561,110 @@ class MiraOrchestrator:
 
         print(f"[mira] Emergency compaction done for {session.user_id} (kept last {KEEP_RECENT})")
 
+    def _prepare_messages(self, session: SessionState) -> list:
+        """Create a sanitized copy of conversation history for the API call.
+
+        Strips ALL base64 image data from older messages, keeping only the
+        most recent image (take_photo) so Claude can see the user. This is
+        the final safety net — even if insertion-time stripping missed something,
+        this ensures no oversized content reaches the API.
+        """
+        IMAGE_PLACEHOLDER = {"type": "text", "text": "[image — see earlier in conversation]"}
+        KEEP_IMAGES_IN_LAST = 2  # only keep images in the last N messages
+
+        history = session.conversation_history
+        cutoff = len(history) - KEEP_IMAGES_IN_LAST
+        sanitized = []
+
+        for idx, msg in enumerate(history):
+            content = msg.get("content")
+            strip_images = idx < cutoff
+
+            # Simple string content (text or JSON tool results) — pass through
+            if isinstance(content, str):
+                sanitized.append(msg)
+                continue
+
+            if not isinstance(content, list):
+                sanitized.append(msg)
+                continue
+
+            new_content = []
+            for block in content:
+                # --- Dict blocks (user messages, tool_result) ---
+                if isinstance(block, dict):
+                    btype = block.get("type")
+
+                    # Image blocks → strip if outside keep window
+                    if btype == "image":
+                        if strip_images:
+                            new_content.append(IMAGE_PLACEHOLDER)
+                        else:
+                            new_content.append(block)
+                        continue
+
+                    # tool_result blocks → sanitize content
+                    if btype == "tool_result":
+                        rc = block.get("content", "")
+                        if isinstance(rc, str):
+                            # JSON string — strip any surviving data URLs
+                            cleaned = self._strip_data_urls_in_string(rc)
+                            new_content.append({**block, "content": cleaned})
+                        elif isinstance(rc, list):
+                            # List content (e.g. take_photo) — strip images if old
+                            new_rc = []
+                            for sub in rc:
+                                if isinstance(sub, dict) and sub.get("type") == "image":
+                                    if strip_images:
+                                        new_rc.append(IMAGE_PLACEHOLDER)
+                                    else:
+                                        new_rc.append(sub)
+                                else:
+                                    new_rc.append(sub)
+                            new_content.append({**block, "content": new_rc})
+                        else:
+                            new_content.append(block)
+                        continue
+
+                    new_content.append(block)
+                    continue
+
+                # --- SDK ContentBlock objects (assistant messages) ---
+                if hasattr(block, "type") and block.type == "image":
+                    if strip_images:
+                        new_content.append(IMAGE_PLACEHOLDER)
+                    else:
+                        new_content.append(block)
+                    continue
+
+                new_content.append(block)
+
+            sanitized.append({"role": msg["role"], "content": new_content})
+
+        return sanitized
+
+    @staticmethod
+    def _strip_data_urls_in_string(s: str) -> str:
+        """Strip base64 data URLs from a JSON string using simple prefix matching.
+
+        Faster than parsing JSON for large strings — just finds and replaces
+        data:image/... patterns up to the next quote character.
+        """
+        result = s
+        prefix = "data:image/"
+        while True:
+            start = result.find(prefix)
+            if start == -1:
+                break
+            # Find the closing quote (data URLs are inside JSON strings)
+            end = result.find('"', start)
+            if end == -1:
+                # No closing quote — replace to end of string
+                result = result[:start] + "[image]"
+                break
+            result = result[:start] + "[image]" + result[end:]
+        return result
+
     async def _call_claude(self, session: SessionState, tool_depth: int = 0) -> None:
         """Make a streaming Claude API call with tool use."""
         if session.wrapping_up:
@@ -581,10 +693,15 @@ class MiraOrchestrator:
         if estimated_tokens > 120_000:
             print(f"[mira] Emergency compaction triggered ({estimated_tokens:,} > 120,000)")
             self._emergency_compact(session)
+            estimated_tokens = self._estimate_history_tokens(session)
+            print(f"[mira] Post-emergency estimated tokens: {estimated_tokens:,}")
 
         session.api_calls += 1
         model, max_tokens = self._select_model(session)
         print(f"[mira] Using {model} (max_tokens={max_tokens}) for {session.user_id}")
+
+        # Prepare sanitized messages — strips old images and data URLs
+        api_messages = self._prepare_messages(session)
 
         # Collect full response (streaming to frontend happens via callback)
         collected_text = ""
@@ -597,7 +714,7 @@ class MiraOrchestrator:
                 model=model,
                 max_tokens=max_tokens,
                 system=session.system_prompt,
-                messages=session.conversation_history,
+                messages=api_messages,
                 tools=TOOL_DEFINITIONS,
             ) as stream:
                 async for event in stream:
