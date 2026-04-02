@@ -119,8 +119,32 @@
     @apply border-border outline-ring/50;
     @apply border-border outline-ring/50;
   }
+
   body {
-    @apply bg-background text-foreground;
-    @apply bg-background text-foreground;
+    background-image: url("https://cdn.dribbble.com/userupload/24040302/file/original-b340d91fd973ddb9a313ecbc71238c55.gif");
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
+  .glass-card {
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 16px;
+    transition: all 0.25s ease;
+  }
+
+  .glass-card:hover {
+    border-color: #ffffff;
+    transform: translateY(-4px) scale(1.03);
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .glow-text {
+    text-shadow:
+      0 0 10px rgba(255, 255, 255, 0.6),
+      0 0 20px rgba(255, 255, 255, 0.4),
+      0 0 40px rgba(120, 120, 255, 0.4);
   }
 }
