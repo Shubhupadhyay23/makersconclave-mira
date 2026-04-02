@@ -24,93 +24,38 @@ const routes = [
 
 export default function Home() {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        backgroundColor: "#0a0a0a",
-        color: "#e0e0e0",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        padding: "2rem",
-      }}
-    >
-      <h1
-        style={{
-          fontSize: "2.5rem",
-          fontWeight: 700,
-          color: "#ffffff",
-          marginBottom: "0.25rem",
-        }}
-      >
-        Mirrorless
-      </h1>
-      <p style={{ color: "#888", marginBottom: "2.5rem", fontSize: "1rem" }}>
-        AI-powered smart mirror
-      </p>
+    <main className="landing-bg min-h-screen flex items-center justify-center">
+      <div className="landing-content flex flex-col items-center text-center">
 
-      <nav
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "1rem",
-          width: "100%",
-          maxWidth: "400px",
-        }}
-      >
-        {routes.map((route) => (
-          <Link
-            key={route.href}
-            href={route.href}
-            style={{
-              display: "block",
-              padding: "1rem 1.25rem",
-              backgroundColor: "#1a1a1a",
-              border: "1px solid #333",
-              borderRadius: "8px",
-              textDecoration: "none",
-              color: "#e0e0e0",
-              transition: "border-color 0.15s",
-            }}
-            onMouseEnter={(e) =>
-              (e.currentTarget.style.borderColor = "#666")
-            }
-            onMouseLeave={(e) =>
-              (e.currentTarget.style.borderColor = "#333")
-            }
-          >
-            <div style={{ fontWeight: 600, fontSize: "1.05rem", marginBottom: "0.25rem" }}>
-              {route.label}
-            </div>
-            <div style={{ fontSize: "0.85rem", color: "#888" }}>
-              {route.description}
-            </div>
-          </Link>
-        ))}
-      </nav>
+        <h1 className="text-8xl md:text-9xl font-bold mb-4 tracking-widest bg-gradient-to-r from-purple-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
+          MIRA
+        </h1>
 
-      <div
-        style={{
-          marginTop: "2.5rem",
-          fontSize: "0.8rem",
-          color: "#555",
-          display: "flex",
-          alignItems: "center",
-          gap: "0.5rem",
-        }}
-      >
-        <span
-          style={{
-            width: "8px",
-            height: "8px",
-            borderRadius: "50%",
-            backgroundColor: "#555",
-            display: "inline-block",
-          }}
-        />
-        Socket: {SOCKET_URL}
+        <p className="text-gray-300 mb-12 text-xl tracking-wide">
+          AI Smart Mirror Assistant
+        </p>
+        <nav className="flex flex-col gap-6 w-full max-w-md">
+          {routes.map((route) => (
+            <Link
+              key={route.href}
+              href={route.href}
+              className="glass-card p-6 text-white"
+            >
+              <div className="font-semibold text-xl mb-1">
+                {route.label}
+              </div>
+              <div className="text-sm text-gray-300">
+                {route.description}
+              </div>
+            </Link>
+          ))}
+        </nav>
+
+        <div className="mt-10 text-sm text-gray-400 flex items-center gap-2">
+          <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+          Socket: {SOCKET_URL}
+        </div>
+
       </div>
     </main>
   );
