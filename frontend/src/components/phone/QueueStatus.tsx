@@ -5,11 +5,10 @@ import { getQueueStatus, joinQueue, leaveQueue, QueueInfo } from "@/lib/api";
 
 interface QueueStatusProps {
   userId: string;
-  onBecameActive?: () => void;
   onLeave?: () => void;
 }
 
-export default function QueueStatus({ userId, onBecameActive, onLeave }: QueueStatusProps) {
+export default function QueueStatus({ userId, onLeave }: QueueStatusProps) {
   const [queue, setQueue] = useState<QueueInfo | null>(null);
   const [error, setError] = useState("");
   const [leaving, setLeaving] = useState(false);
@@ -46,13 +45,7 @@ export default function QueueStatus({ userId, onBecameActive, onLeave }: QueueSt
     };
   }, [userId]);
 
-  // Fire onBecameActive exactly once
-  useEffect(() => {
-    if (queue?.status === "active" && !firedRef.current && onBecameActive) {
-      firedRef.current = true;
-      onBecameActive();
-    }
-  }, [queue?.status, onBecameActive]);
+
 
   async function handleLeave() {
     setLeaving(true);

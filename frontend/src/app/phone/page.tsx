@@ -63,6 +63,10 @@ export default function PhonePage() {
     socket.connect();
     socket.emit("join_room", { user_id: user.id });
 
+    const handleSessionStarting = () => {
+      setState("idle");
+    };
+
     const handleSessionEnded = (data: SessionEndedPayload) => {
       setRecapData({
         summary: data?.summary,
@@ -72,9 +76,11 @@ export default function PhonePage() {
       setState("recap");
     };
 
+    socket.on("session_starting", handleSessionStarting);
     socket.on("session_ended", handleSessionEnded);
 
     return () => {
+      socket.off("session_starting", handleSessionStarting);
       socket.off("session_ended", handleSessionEnded);
     };
   }, [user]);
@@ -104,10 +110,6 @@ export default function PhonePage() {
     },
     [user]
   );
-
-  const handleBecameActive = useCallback(() => {
-    setState("idle");
-  }, []);
 
   const handleLeaveQueue = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
@@ -140,7 +142,7 @@ export default function PhonePage() {
       )}
       {state === "queue" && user && (
         <div className="flex flex-col items-center justify-center min-h-screen p-4">
-          <QueueStatus userId={user.id} onBecameActive={handleBecameActive} onLeave={handleLeaveQueue} />
+          <QueueStatus userId={user.id} onLeave={handleLeaveQueue} />
         </div>
       )}
       {state === "idle" && <IdleView />}
